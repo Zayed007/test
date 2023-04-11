@@ -1,0 +1,54 @@
+package com.samsung.android.waterplugin.watchface.data.repository
+
+import com.samsung.android.companionservice.aidl.watchface.CategoryLists
+
+import com.samsung.android.waterplugin.watchface.util.WFLog
+import com.samsung.android.waterplugin.CompanionServiceInterface
+import com.samsung.android.waterplugin.watchface.data.repository.WatchFaceRepository.DEVICE_ID_IS_NULL_EXCEPTION
+
+import io.reactivex.Notification
+import io.reactivex.Observable
+import io.reactivex.subjects.PublishSubject
+
+/**
+ * This is a repository class which will communicate with
+ * companion service and expose category list related data to subscriber or observer
+ *
+ * @author  Md Abdul Kaium(a.kaium)
+ * @since   2021-03-08
+ * @lastModified 2022-05-12(pranto.cha)
+ */
+object WatchFaceCategoryListRepository {
+
+    private const val TAG = "WatchFaceCategoryListRepository"
+
+    private val _watchFaceCategoryList: PublishSubject<Notification<ArrayList<CategoryLists>>> =
+            PublishSubject.create()
+    val watchFaceCategoryList: Observable<Notification<ArrayList<CategoryLists>>>
+        get() = _watchFaceCategoryList
+
+    /**
+     * this method for getting watchface category list data
+     * non returnable method, when this method call, it send data to all its observer.
+     *
+     */
+    fun getWatchFaceCategoryLists() {
+        WFLog.w(TAG,"getWatchFaceCategoryLists")
+        WatchFaceRepository.getWatchDeviceId()?.let {
+            val categoryLists = CompanionServiceInterface.getWatchFaceCategoryLists(it)
+            if(categoryLists.isNotEmpty()) {
+                WFLog.d(TAG,"getWatchFaceCategoryLists:: isNotEmpty")
+                _watchFaceCategoryList.onNext(Notification.createOnNext(categoryLists))
+            } else {
+                WFLog.e(TAG,"categoryLists is empty")
+                _watchFaceCategoryList.onNext( Notification.createOnError(
+                    WatchFaceRepository.NULL_OR_EMPTY_EXCEPTION
+                ))
+            }
+        } ?: run {
+            WFLog.e(TAG,"device id is null")
+            _watchFaceCategoryList.onNext(Notification.createOnError(DEVICE_ID_IS_NULL_EXCEPTION))
+        }
+    }
+
+}
