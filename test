@@ -1,53 +1,61 @@
-package com.samsung.android.companionservice.watchface.data
+object ArEmojiCharacterDataMap {
+    private val TAG = "ArEmojiCharacterDataMap"
+    private val watchFaceOrderMap = HashMap<String, List<ArEmojiItemData>>()
+    private val LockDatabase = Any()
 
-object AutoSyncData {
-    data class WatchfaceInfo (var pn : String?, var cn : String?, var fId : Int? )
-    private var autoSyncProcess = false
-    private var currentSyncWF : WatchfaceInfo? = null
-    private var syncImageData : Triple<ArrayList<String>?,ArrayList<String>?,ArrayList<String>?>? = null
-
-    @JvmStatic
-    fun clearAll(){
-        autoSyncProcess = false
-        currentSyncWF = null
-        syncImageData = null
+    fun setAvatar(deviceId: String, avatar: LinkedHashMap<String, ArEmojiItemData>) {
+        synchronized(LockDatabase) {
+            var avatarList = ArrayList(avatar.values)
+            WFLog.d(TAG, "avatarList size : " + avatar.size)
+            watchFaceOrderMap.put(deviceId, avatarList)
+        }
+        WFLog.d(TAG, "setAvatar")
     }
 
-    @JvmStatic
-    fun setAutoSyncProcess(status: Boolean) {
-        autoSyncProcess = status
+    fun getAvatar(deviceId: String): List<ArEmojiItemData>? {
+        var avatarList: List<ArEmojiItemData> = emptyList()
+        watchFaceOrderMap.get(deviceId)?.let{
+            WFLog.d(TAG, "getAvatar ${it.size}")
+        } ?:run{
+            return avatarList
+        }
+        return watchFaceOrderMap.get(deviceId)
+    }
+}
+
+data class ArEmojiItemData(var packageName: String?, var imageName: String?, var activated: Int?) : Parcelable {
+
+    constructor(`in`: Parcel) :this(`in`.readString(), `in`.readString(), `in`.readInt()) {
     }
 
-    @JvmStatic
-    fun isAutoSyncOn() : Boolean{
-        return autoSyncProcess
+    override fun writeToParcel(parcel: Parcel, flags: Int) {
+        parcel.writeString(packageName)
+        parcel.writeString(imageName)
+        activated?.let { parcel.writeInt(it) }
     }
 
-    @JvmStatic
-    fun setCurrentSyncWF(wfInfo : WatchfaceInfo) {
-        currentSyncWF = wfInfo
+    override fun describeContents(): Int {
+        return 0
     }
 
-    @JvmStatic
-    fun getCurrentSyncWF() : WatchfaceInfo? {
-        return currentSyncWF
+    fun setActivatStatus(status : Int){
+        this.activated = status
     }
 
-    @JvmStatic
-    fun putImageData(imageData : Triple<ArrayList<String>,ArrayList<String>,ArrayList<String>>?){
-        syncImageData = imageData
+    fun getActivateStatus(): Int {
+        if (this.activated == null) {
+            this.activated = 0
+        }
+        return this.activated!!
     }
 
-    @JvmStatic
-    fun getAddedList() : ArrayList<String>? {
-        return syncImageData?.let { it.second } ?: run { null }
-    }
-    @JvmStatic
-    fun getDeletedList() : ArrayList<String>? {
-        return syncImageData?.let { it.third } ?: run { null }
-    }
-    @JvmStatic
-    fun getImageList() : ArrayList<String>? {
-        return syncImageData?.let { it.first } ?: run { null }
+    companion object CREATOR : Parcelable.Creator<ArEmojiItemData> {
+        override fun createFromParcel(parcel: Parcel): ArEmojiItemData {
+            return ArEmojiItemData(parcel)
+        }
+
+        override fun newArray(size: Int): Array<ArEmojiItemData?> {
+            return arrayOfNulls(size)
+        }
     }
 }
