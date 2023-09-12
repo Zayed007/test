@@ -1,258 +1,922 @@
-package com.samsung.android.companionservice.watchface.bnr
-
-import android.annotation.SuppressLint
-import android.content.Context
-import androidx.work.Data
-import androidx.work.WorkerParameters
-import com.samsung.android.companionservice.watchface.util.WFLog
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.File
-
-class WfBnrAremojiWork(cont: Context, param: WorkerParameters) : WfBnrWorkerBase(cont, param) {
-
-    internal var srcPath: String? = ""
-    internal var targetPath: String? = ""
-    internal var comparePath: String? = ""
-    internal var src: File? = null
-    internal var target: File? = null
-    internal var compare: File? = null
-    internal var output: Data? = null
-    var isBackup = false
-
-    @SuppressLint("RestrictedApi")
-    override suspend fun doWork(): Result {
-        return withContext(Dispatchers.IO) {
-            val packageName = inputData.getString(WF_RESOURCE_PACKAGE_NAME)
-            val className = inputData.getString(WF_RESOURCE_CLASS_NAME)
-            var favoriteId = inputData.getInt(WF_RESOURCE_FAVORITE_ID, -1)
-            isBackup = inputData.getBoolean(BACKUP_STATUS, false)
-
-            try {
-                WFLog.d(TAG, " WfBnrAremojiWork dowork")
-                @Suppress("VARIABLE_WITH_REDUNDANT_INITIALIZER") var result = 1
-                var path = inputData.getString(GM_FOLDER_PATH)
-                var resourceFolder = "$packageName${File.separator}$className"
-                var backupFolder =
-                    "$BACKUP_FOLDER${File.separator}$AREMOJI_BACKUP_FOLDER${File.separator}$favoriteId"
-
-                srcPath = path!!.plus(if (isBackup) resourceFolder else backupFolder)
-                targetPath = path.plus(if (isBackup) backupFolder else resourceFolder)
-                comparePath =
-                    path!!.plus("$packageName${File.separator}$className${File.separator}$ID$favoriteId${File.separator}$EMOJI_DATA_FOLDER")
-
-                WFLog.d(TAG, " srcPath $srcPath")
-                WFLog.d(TAG, " comparePath $comparePath")
-                WFLog.d(TAG, " targetPath $targetPath")
-
-                src = File(srcPath)
-                target = File(targetPath)
-                compare = File(comparePath)
-                if (!compare!!.exists()) {
-                    result = RESULT_SRC_NOT_EXIST
-                } else {
-                    result = if (isBackup) backupResource(target!!) else restoreResource()
-                }
-                output = setOutPutData(packageName!!, favoriteId, result, isBackup)
-                if (result <= 0) {
-                    Result.Failure(output!!)
-                } else {
-                    Result.Success()
-                }
-            } catch (e: Exception) {
-                WFLog.w(TAG, "WfAremojiWorker Exception : $e")
-                output =
-                    setOutPutData(packageName!!, favoriteId, RESULT_UNKNOWN_EXCEPTION, isBackup)
-                Result.Failure()
-            }!!
-        }
-    }
-
-    private fun restoreResource(): Int {
-        return if (copyFile()) {
-            RESULT_SUCCESS
-        } else {
-            RESULT_CPY_FAILED
-        }
-    }
-
-    override fun cleanup(target: File): Boolean {
-        return super.cleanup(target)
-    }
-
-    override fun copyFile(): Boolean {
-        WFLog.d(TAG, "copyFile Aremoji")
-        compare!!.listFiles()?.let { compList ->
-            if (!compList.isNullOrEmpty()) {
-                compList.filter { it.name.startsWith("avatarsticker") }
-                    .forEach { compFile ->
-                        src!!.listFiles()?.let { fileList ->
-                            fileList.filter {
-                                it.nameWithoutExtension.equals(compFile.nameWithoutExtension) &&
-                                        it.name.endsWith(".zip")
-                            }.forEach {
-                                WFLog.d(TAG, "copyFile1 srcPath $it")
-                                var targetFile =
-                                    File(targetPath!!.plus("${File.separator}${it.name}"))
-                                WFLog.d(TAG, "copyFile1 targetpath $targetFile")
-                                copySpecificFile(it, targetFile)
-                            }
-                        }
-                    }
-            }
-        }
-        return true
-    }
-
-
-    companion object {
-        val TAG = "WfBnrAremojiWork"
-    }
-}
-
-package com.samsung.android.companionservice.watchface.bnr
+package com.samsung.android.companionservice.watchface.manager
 
 import android.content.Context
-import androidx.work.CoroutineWorker
-import androidx.work.Data
-import androidx.work.WorkerParameters
-import androidx.work.workDataOf
+import android.net.Uri
+import android.text.TextUtils
+import com.google.android.gms.wearable.DataMap
+import com.samsung.android.app.watchmanager.plugin.libfactory.util.FileEncryptionUtils.Companion.getEncryptionContext
+import com.samsung.android.companionservice.aidl.watchface.*
+import com.samsung.android.companionservice.constant.WatchFaceConstant
+import com.samsung.android.companionservice.watchface.database.DbManager
 import com.samsung.android.companionservice.watchface.util.WFLog
-import com.samsung.android.plugin.sharedlib.utils.copyFile
-import java.io.File
+import com.samsung.android.companionservice.watchface.util.WatchFaceUtil
+import com.samsung.android.companionservice.watchface.util.WatchfaceCategoryUtil
+import com.samsung.android.companionservice.watchface.util.WatchfacePreference
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedConstant
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil.isAvailableWatchfaceFeatureUsed
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil.setOSCapability
+import java.util.stream.Collectors
 
-open class WfBnrWorkerBase(cont: Context, param: WorkerParameters) : CoroutineWorker(cont, param) {
-    protected var mContext: Context? = null
+object WatchfaceDataMap {
+    private val TAG = "WatchfaceDataMap"
+    private val LockDatabase = Any()
+    private val mUpdateHashMap = HashMap<String, Boolean>()
+    private val mRelatedAppHashMap = HashMap<String, Boolean>()
+    private val mDeviceNodeMap = HashMap<String, String>()
+    private val backupConfigDataHash = HashMap<String, DataMap>()
+    private var mProtectDefaultWatchFaceSet: WatchfacePackageClassSet? = null
+    private var mWatchfaceOrderList: WatchfaceOrderList? = null
+    private var mCurrentEditWatchface: ExWatchFace? = null
+    private var mDbManager: DbManager? = null
+    private var oobe_fileUri: Uri? = null
+    private var isSupportNewFeature = WatchFaceSharedConstant.NOT_EXIST
+    private var isFavoriteLIst = false
+    private var isFotaUpdate = false
+    private var isWatchfaceEditWithUserStyle = false
 
-    override suspend fun doWork(): Result {
-        TODO("Not yet implemented")
-    }
-
-    open fun init(context: Context) {
-        mContext = context
-    }
-
-    open fun updateBackupFile() {
-        TODO("Not yet implemented")
-    }
-
-    open fun backupResource(file: File): Int {
-        WFLog.d(TAG, " backupResource ${file.absolutePath}")
-        return if (cleanup(file)) {
-            if (copyFile()) {
-                RESULT_SUCCESS
-            } else {
-                RESULT_CPY_FAILED
-            }
-        } else RESULT_CLEANUP_FAILED
-    }
-
-    open fun cleanUp(): Boolean {
-        return true
-    }
-
-    open fun restoreResource(file: File): Int {
-        WFLog.d(TAG, " restoreResource ${file.absolutePath}")
-        return if (cleanup(file)) {
-            if (copyFile()) {
-                RESULT_SUCCESS
-            } else {
-                RESULT_CPY_FAILED
-            }
-        } else RESULT_CLEANUP_FAILED
-
-    }
-
-    open fun cleanup(target: File): Boolean {
-        WFLog.d(TAG, "cleanup : ${target.absolutePath}")
-        var res = true
-        target?.let { targetFile ->
-            if (targetFile.exists()) {
-                targetFile.listFiles()?.let {
-                    it.forEach {
-                        if (!it.delete()) {
-                            if (res) res = false
-                        }
-                        WFLog.w(TAG, "${it.name}  deleted $res")
-                    }
-                }
-            } else {
-                targetFile.mkdirs()
-            }
-        }
-        return res
-    }
-
-    open fun copyFile(): Boolean {
-        return true
-    }
-
-    open fun copyDir(source: File, target: File) {
-        var makeDirectory = false
-        if (source.isDirectory) {
-            if (!target.exists()) {
-                makeDirectory = target.mkdir()
-            }
-            WFLog.d(TAG, "Value of MKDIR ::$makeDirectory")
-            val children = source.list()
-            if (children != null) {
-                for (i in children.indices) {
-                    copyDir(
-                        File(source, children[i]),
-                        File(target, children[i])
-                    )
-                }
-            }
+    @JvmStatic
+    fun setBackupDataConfig(key: String, config: DataMap?) {
+        WFLog.d(TAG, "setBackupDataConfig() $ $key")
+        if (config != null) {
+            WFLog.d(TAG, "setBackupDataConfig() $  setted $key")
+            backupConfigDataHash.put(key, config)
         } else {
-            copySpecificFile(source, target)
+            WFLog.d(TAG, "setBackupDataConfig() $  removed $key")
+            backupConfigDataHash.remove(key)
         }
     }
 
-    open fun copySpecificFile(source: File, target: File) {
-        return copyFile(source, target)
+    @JvmStatic
+    fun getBackupDataConfig(key: String): DataMap? {
+        WFLog.d(TAG, "getBackupDataConfig() $key")
+        backupConfigDataHash.let {
+            if (it.containsKey(key)) {
+                return it.get(key)
+            } else {
+                WFLog.e(TAG, "getBackupDataConfig() does not contains key : $key")
+            }
+        }
+        return null
     }
 
-    open fun setOutPutData(pn: String, fi: Int, reason: Int, isBackup: Boolean): Data {
-        return workDataOf(
-            WF_RESOURCE_PACKAGE_NAME to pn,
-            WF_RESOURCE_FAVORITE_ID to fi,
-            REASON to reason,
-            BACKUP_STATUS to isBackup
+    @JvmStatic
+    public var restoreState: String? = null
+        get() = field ?: "null"
+        set(state) {
+            field = state
+        }
+
+    @JvmStatic
+    fun init(context: Context) {
+        if (mDbManager == null)
+            mDbManager = DbManager.getInstance(
+                getEncryptionContext(context)
+            )
+    }
+
+    @JvmStatic
+    fun getFotaUpdate(): Boolean {
+        return isFotaUpdate
+    }
+
+    @JvmStatic
+    fun setFotaUpdate(fotaUpdate: Boolean) {
+        isFotaUpdate = fotaUpdate
+    }
+
+    @JvmStatic
+    fun setProtectDefaultWatchFace(packageName: String, className: String, favoriteId: Int) {
+        WFLog.w(TAG, "setProtectDefaultWatchFace() :: $packageName / $className  / $favoriteId")
+        if (!TextUtils.isEmpty(packageName) && !TextUtils.isEmpty(className)) {
+            mProtectDefaultWatchFaceSet =
+                WatchfacePackageClassSet(packageName, className, favoriteId)
+        }
+    }
+
+    @JvmStatic
+    fun resetProtectDefaultWatchFace() {
+        WFLog.d(TAG, "resetProtectDefaultWatchFace()")
+        mProtectDefaultWatchFaceSet = null
+    }
+
+    @JvmStatic
+    fun isProtectedDefaultWatchFaceSetExist(packageName: String, className: String): Boolean {
+        if (mProtectDefaultWatchFaceSet != null) {
+            if (mProtectDefaultWatchFaceSet!!.packageName == packageName &&
+                mProtectDefaultWatchFaceSet!!.className == className
+            ) {
+                WFLog.w(TAG, "isProtectedDefaultWatchFaceSetExist $className")
+                return true
+            }
+        }
+        return false
+    }
+
+    @JvmStatic
+    fun isProtectedDefaultWatchFace(packageName: String, className: String): Boolean {
+        return if (mProtectDefaultWatchFaceSet != null) {
+            mProtectDefaultWatchFaceSet!!.packageName == packageName &&
+                    mProtectDefaultWatchFaceSet!!.className == className
+        } else false
+    }
+
+    @JvmStatic
+    fun getProtectedDefaultWatchFaceFavroiteId(packageName: String, className: String): Int {
+        if (mProtectDefaultWatchFaceSet != null) {
+            if (mProtectDefaultWatchFaceSet!!.packageName == packageName &&
+                mProtectDefaultWatchFaceSet!!.className == className
+            ) {
+                return mProtectDefaultWatchFaceSet!!.favoriteId
+            }
+        }
+        return WatchFaceConstant.UNKNOWN_FAVORITE_ID
+    }
+
+    @JvmStatic
+    fun updateProtectedDefaultWatchFaceFavroiteId(
+        packageName: String,
+        className: String,
+        favoriteId: Int
+    ) {
+        if (mProtectDefaultWatchFaceSet != null) {
+            if (mProtectDefaultWatchFaceSet!!.packageName == packageName &&
+                mProtectDefaultWatchFaceSet!!.className == className
+            ) {
+                mProtectDefaultWatchFaceSet!!.favoriteId = favoriteId
+            }
+        }
+    }
+
+    @JvmStatic
+    fun isProtectedDefaultWatchFaceSetExist(): Boolean {
+        return mProtectDefaultWatchFaceSet != null
+    }
+
+    @JvmStatic
+    fun resetDataBase(context: Context, deviceID: String) {
+        WFLog.w(TAG, "resetDataBase $deviceID")
+        mDeviceNodeMap.clear()
+        WatchfaceCategoryUtil.resetCategoryList(context, deviceID)
+        WatchFaceUtil.resetDataFolder(context, deviceID)
+        WatchFaceUtil.resetWatchfacePrefenses(context, deviceID, false)
+        isSupportNewFeature = WatchFaceSharedConstant.NOT_EXIST
+        setOSCapability(context, deviceID, isSupportNewFeature)
+        if (mDbManager != null) {
+            mDbManager!!.resetDataBase(deviceID)
+        }
+        mUpdateHashMap.clear()
+        mRelatedAppHashMap.clear()
+//        isHolidayWatchfaceUpdated = false
+    }
+
+    @JvmStatic
+    fun setPeerID(deviceID: String, peerID: String) {
+        mDeviceNodeMap[deviceID] = peerID
+        mDbManager!!.checkAndCreateTable(deviceID)
+    }
+
+    @JvmStatic
+    fun getPeerID(deviceID: String?): String {
+        var peerId = mDeviceNodeMap[deviceID]
+        if (peerId == null) peerId = "00"
+        return peerId
+    }
+
+    @JvmStatic
+    fun getDeviceID(peerID: String): String? {
+        if (mDeviceNodeMap.isEmpty())
+            return null
+        for (element: Map.Entry<String, String> in mDeviceNodeMap) {
+            if (element.value == peerID)
+                return element.key
+        }
+        return null
+    }
+
+    @JvmStatic
+    fun setIdleWatchface(context: Context?, deviceID: String?, idle: ExWatchFace?) {
+        if (idle == null)
+            return
+
+        synchronized(LockDatabase) {
+            if (mDbManager != null) {
+                mDbManager!!.setIdleWatchface(
+                    idle.packageName,
+                    idle.className,
+                    idle.favoriteId,
+                    deviceID
+                )
+                mDbManager!!.updateWatchfaceNewlyDownloadedInfo(
+                    idle.packageName,
+                    idle.className,
+                    false,
+                    deviceID
+                )
+            }
+        }
+        WatchfacePreference.setIdleWatchface(context, deviceID, idle.packageName, idle.className)
+        WFLog.d(
+            TAG,
+            "setIdleWatchface " + idle.packageName + "  " + idle.className + "   type : " + idle.type
         )
     }
 
-    protected companion object {
-        const val TAG = "WfBnrWorkerBase"
-        const val WF_RESOURCE_PACKAGE_NAME = "packageName"
-        const val WF_RESOURCE_CLASS_NAME = "className"
-        const val WF_RESOURCE_FAVORITE_ID = "favoriteId"
-        const val ID = "id_"
-        const val GM_FOLDER_PATH = "gmfolderPath"
-        const val BACKUP_FOLDER = "backup"
-        const val GALLERY_FOLDER = "Gallery"
-        const val EMOJI_DATA_FOLDER = "galleryFolder"
-        const val CUSTOM_PREVIEW = "customize_preview"
-        const val RESULT_EXTENSION = "result.xml"
-        const val MYPHOTO_FOLDER = "MyPhoto"
-        const val MYPEBBLE_FOLDER = "MyPebble"
-        const val PHOTOSTICKER_FOLDER = "PhotoSticker"
-        const val AREMOJI_BACKUP_FOLDER = "com.samsung.android.watch.watchface.aremoji"
-        const val MYPHOTO_BACKUP_FOLDER = "com.samsung.android.watch.watchface.myphoto"
-        const val MYPEBBLE_BACKUP_FOLDER = "com.samsung.android.watch.watchface.mypebble"
-        const val PHOTOSTICKER_BACKUP_FOLDER = "com.samsung.android.watch.watchface.photosticker"
-        const val REASON = "reason"
-        const val RESULT_BACKUP_ALREADY_EXIST = 3
-        const val RESULT_SRC_NOT_EXIST = 2
-        const val RESULT_SUCCESS = 1
-        const val RESULT_UNKNOWN_EXCEPTION = 0
-        const val RESULT_CPY_FAILED = -3
-        const val RESULT_ZIP_FAILED = -4
-        const val RESULT_AVATAR_NOT_EXIST = -5
-        const val RESULT_CLEANUP_FAILED = -6
-        const val RESULT_UNZIP_FAILED = -7
-        const val RESULT_IS_DWF = -8
-        const val BACKUP_STATUS = "backup_status"
-        const val BACKUP_PREFIX = "backup_"
-
+    @JvmStatic
+    fun setIdleWatchface(
+        context: Context?,
+        deviceID: String?,
+        idlePackageName: String?,
+        idleClassName: String,
+        favoriteId: Int
+    ) {
+        synchronized(LockDatabase) {
+            if (mDbManager != null) {
+                mDbManager!!.setIdleWatchface(idlePackageName, idleClassName, favoriteId, deviceID)
+                mDbManager!!.updateWatchfaceNewlyDownloadedInfo(
+                    idlePackageName,
+                    idleClassName,
+                    false,
+                    deviceID
+                )
+            }
+        }
+        WatchfacePreference.setIdleWatchface(context, deviceID, idlePackageName, idleClassName)
+        WFLog.d(TAG, "setIdleWatchface idleClassName $idleClassName")
     }
+
+    @JvmStatic
+    fun getIdleWatchface(deviceId: String?): ExWatchFace? {
+        var idle: ExWatchFace? = null
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                idle = mDbManager!!.getIdleWatchface(deviceId)
+            WFLog.d(TAG, "getIdleWatchface $idle")
+        }
+        return idle
+    }
+
+    @JvmStatic
+    fun setCurrentEditWatchface(watchface: ExWatchFace) {
+        WFLog.w(TAG, "setCurrentEditWatchface : " + watchface.className)
+        mCurrentEditWatchface = watchface
+    }
+
+    @JvmStatic
+    fun getCurrentEditWatchface(deviceId: String?): ExWatchFace? {
+        if (mCurrentEditWatchface == null) {
+            mCurrentEditWatchface = getIdleWatchface(deviceId)
+        }
+        return mCurrentEditWatchface
+    }
+
+    @JvmStatic
+    fun getWatchfaceByClassName(className: String?, deviceId: String?): ExWatchFace? {
+        var wf: ExWatchFace? = null
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                wf = mDbManager!!.getWatchfaceByClassName(className, deviceId)
+            WFLog.d(TAG, "getWatchfaceByClassName $wf")
+        }
+        return wf
+    }
+
+    @JvmStatic
+    fun getWatchfaceByPackageName(packageName: String?, deviceId: String?): ExWatchFace? {
+        var wf: ExWatchFace? = null
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                wf = mDbManager!!.getWatchfaceByPackageName(packageName, deviceId)
+            WFLog.d(TAG, "getWatchfaceByPackageName $wf")
+        }
+        return wf
+    }
+
+    @JvmStatic
+    fun getAvailableWatchface(
+        packageName: String?,
+        className: String?,
+        deviceId: String?
+    ): ExWatchFace? {
+        var wf: ExWatchFace? = null
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                wf = mDbManager!!.getAvailableWatchFace(packageName, className, deviceId)
+            WFLog.d(TAG, "getAvailableWatchFace $wf")
+        }
+        return wf
+    }
+
+    @JvmStatic
+    fun getFavoriteWatchface(
+        packageName: String?,
+        className: String?,
+        favoriteId: Int,
+        deviceId: String?
+    ): ExWatchFace? {
+        var wf: ExWatchFace? = null
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                wf = mDbManager!!.getFavoriteWatchFace(packageName, className, favoriteId, deviceId)
+            WFLog.d(TAG, "getFavoriteWatchface $wf")
+        }
+        return wf
+    }
+
+    @JvmStatic
+    fun getFavoriteWatchface(
+        packageName: String?,
+        className: String?,
+        deviceId: String?
+    ): List<ExWatchFace?>? {
+        val watchFaceArrayList = mDbManager!!.getFavoriteWfList(deviceId, mUpdateHashMap, mRelatedAppHashMap)
+        return watchFaceArrayList.stream().filter { exWatchFace ->
+            exWatchFace.className.equals(className) && exWatchFace.packageName
+                .equals(packageName)
+        }.collect(Collectors.toList())
+    }
+
+    @JvmStatic
+    fun setWatchFaceOrderType(context: Context?, deviceID: String?, orderType: WatchfaceOrderType?) {
+        WFLog.w(TAG, "setWatchFaceOrderType : $orderType")
+        WatchfacePreference.setWatchFaceOrderType(context, deviceID, orderType)
+    }
+
+    /**
+     * @return true: Order type is most recent first, false: Order type is custom
+     */
+    @JvmStatic
+    fun getWatchFaceOrderType(context: Context?, deviceID: String?): WatchfaceOrderType {
+        val orderType = WatchfacePreference.getWatchFaceOrderType(context, deviceID)
+        WFLog.w(TAG,"getWatchFaceOrderType : $orderType")
+        return orderType
+    }
+
+    @JvmStatic
+    fun setWatchFaceOrderList(orderList: WatchfaceOrderList?, deviceID: String?): Boolean {
+        if (orderList == null) {
+            return false
+        }
+        synchronized(LockDatabase) {
+            if (mDbManager == null) {
+                return false
+            }
+            val result = mDbManager!!.updateWatchFaceOrder(orderList, deviceID)
+            if (isFavoriteLIst && result) {
+                if (mWatchfaceOrderList != null) {
+                    mWatchfaceOrderList!!.clear()
+                    mWatchfaceOrderList = null
+                }
+            } else {
+                mWatchfaceOrderList = orderList
+            }
+            return result
+        }
+    }
+
+//    @JvmStatic
+//    fun setHolidayWatchfaceUpdated(set: Boolean) {
+//        isHolidayWatchfaceUpdated = set
+//    }
+//
+//    @JvmStatic
+//    fun isHolidayWatchfaceUpdated(): Boolean {
+//        return isHolidayWatchfaceUpdated
+//    }
+
+    @JvmStatic
+    fun setUpdateWatchfaceList(
+        updateList: HashMap<String, Boolean>,
+        relatedAppList: HashMap<String, Boolean>
+    ) {
+        mUpdateHashMap.clear()
+        mUpdateHashMap.putAll(updateList)
+        mRelatedAppHashMap.clear()
+        mRelatedAppHashMap.putAll(relatedAppList)
+        WFLog.w(TAG, "setUpdateWatchfaceList : " + updateList.size + "  " + relatedAppList.size)
+    }
+
+    @JvmStatic
+    fun getFavoriteWatchfaceList(
+        deviceID: String?
+    ): ArrayList<ExWatchFace> {
+        var watchFaceArrayList = ArrayList<ExWatchFace>()
+        synchronized(LockDatabase) {
+            if (mDbManager != null) {
+                watchFaceArrayList =
+                    mDbManager!!.getFavoriteWfList(deviceID, mUpdateHashMap, mRelatedAppHashMap)
+            }
+        }
+        WFLog.w(TAG, "getFavoriteWatchfaceList : " + watchFaceArrayList.size)
+        return watchFaceArrayList
+    }
+
+    private var mAvailableWatchfaceList: ArrayList<ExWatchFaceList> = ArrayList<ExWatchFaceList>()
+
+    @JvmStatic
+    fun getAvailableWatchfaceListCount(deviceId: String?): Int {
+        getAvailableWatchfaceListInternal(deviceId)
+        return mAvailableWatchfaceList.size
+    }
+
+    @JvmStatic
+    fun getAvailableWatchfaceList(deviceId: String?, num: Int): ArrayList<ExWatchFace>? {
+        return if(num > mAvailableWatchfaceList.size)
+            null
+        else {
+            WFLog.d(TAG, "getAvailableWatchfaceList : $num / " + mAvailableWatchfaceList[num].watchfaceList.size)
+            mAvailableWatchfaceList[num].watchfaceList
+        }
+    }
+
+    @JvmStatic
+    fun getAvailableWatchfaceList(deviceId: String?): ArrayList<ExWatchFace>? {
+        var count = mAvailableWatchfaceList.size
+        if(count == 0)
+            return null
+
+        var availableList:ArrayList<ExWatchFace> = ArrayList<ExWatchFace>()
+        for(i in 0 until count)
+            availableList.addAll(mAvailableWatchfaceList[i].watchfaceList)
+        return availableList
+    }
+
+    @JvmStatic
+    fun getAvailableWatchfaceListInternal(deviceId: String?): ArrayList<ExWatchFaceList> {
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                mAvailableWatchfaceList = mDbManager!!.getAvailableWfList(deviceId, mUpdateHashMap, mRelatedAppHashMap)
+        }
+        return mAvailableWatchfaceList
+    }
+
+
+    @JvmStatic
+    fun setFavoriteWatchfaceList(
+        deviceID: String?,
+        watchfaceList: HashMap<String, ExWatchFace>,
+        isFavorite: Boolean
+    ): Boolean {
+        WFLog.w(TAG, "setFavoriteWatchfaceList : " + deviceID + "    " + watchfaceList.size)
+        synchronized(LockDatabase) {
+            if (mDbManager == null) {
+                return false
+            }
+            mDbManager!!.checkDuplicateFavoriteListUpdate(watchfaceList, deviceID)
+            isFavoriteLIst = isFavorite
+            watchfaceList.clear()
+            if (mWatchfaceOrderList == null) {
+                return false
+            }
+            WFLog.w(TAG,"setFavoriteWatchfaceList : OrderList : " + mWatchfaceOrderList!!.orderList.size)
+            val result = mDbManager!!.updateWatchFaceOrder(mWatchfaceOrderList, deviceID)
+            if (isFavoriteLIst && result) {
+                mWatchfaceOrderList!!.clear()
+                mWatchfaceOrderList = null
+                return true
+            }
+            return false
+        }
+    }
+
+    @JvmStatic
+    fun setAvailableWatchfaceList(deviceId: String?, availableList: HashMap<String, ExWatchFace>) {
+        WFLog.w(TAG, "setAvailableWatchfaceList : " + deviceId + "    " + availableList.size)
+        synchronized(LockDatabase) {
+            if (mDbManager != null) {
+                mDbManager!!.checkDuplicateAvailableListUpdate(availableList, deviceId)
+                availableList.clear()
+            }
+        }
+    }
+
+    @JvmStatic
+    fun updateWatchfacePreloadTypeInfo(packageName: String, className: String, type: String, deviceID: String?) {
+        WFLog.w(TAG,"updateWatchfacePreloadTypeInfo : $packageName  $className  $type")
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                mDbManager!!.updateWatchfacePreloadTypeInfo(
+                packageName,
+                className,
+                type,
+                deviceID
+            )
+        }
+    }
+
+    @JvmStatic
+    fun setWatchFaceType(packageName: String, className: String, type: String, deviceID: String?) {
+        WFLog.w(TAG,"setWatchFaceType : $packageName  $className  $type")
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                mDbManager!!.updateWatchfaceTypeInfo(
+                packageName,
+                className,
+                type,
+                deviceID
+            )
+        }
+    }
+
+    @JvmStatic
+    fun setWatchFaceVersion(
+        packageName: String,
+        className: String,
+        version: Int,
+        deviceID: String?
+    ) {
+        WFLog.w(TAG,"setWatchFaceVersion : $packageName  $className  $version")
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                mDbManager!!.updateWatchfaceVersionInfo(
+                packageName,
+                className,
+                version,
+                deviceID
+            )
+        }
+    }
+
+    @JvmStatic
+    fun getWatchFaceVersion(packageName: String, className: String, deviceId: String?): Int {
+        var result = 0
+        var watchFace: ExWatchFace?
+        synchronized(LockDatabase) {
+            if (mDbManager != null) {
+                watchFace = mDbManager!!.getAvailableWatchFace(packageName, className, deviceId)
+                if (watchFace != null)
+                    result = watchFace!!.version
+            }
+        }
+        WFLog.w(TAG,"getWatchFaceVersion : $packageName  $className  $result")
+        return result
+    }
+
+    @JvmStatic
+    fun setWatchFaceAppVersion(
+        packageName: String,
+        className: String,
+        appVersion: Long,
+        deviceID: String?
+    ) {
+        WFLog.w(TAG,"setWatchFaceAppVersion : $packageName  $className  $appVersion")
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                mDbManager!!.updateWatchfaceAppVersionInfo(
+                    packageName,
+                    className,
+                    appVersion,
+                    deviceID
+                )
+        }
+    }
+
+    @JvmStatic
+    fun getWatchFaceAppVersion(packageName: String, className: String, deviceId: String?): Long {
+        var result = 0L
+        var watchFace: ExWatchFace?
+        synchronized(LockDatabase) {
+            if (mDbManager != null) {
+                watchFace = mDbManager!!.getAvailableWatchFace(packageName, className, deviceId)
+                if (watchFace != null)
+                    result = watchFace!!.appVersion
+            }
+        }
+        WFLog.w(TAG,"getWatchFaceAppVersion : $packageName  $className  $result")
+        return result
+    }
+
+    @JvmStatic
+    fun setCategoryData(
+        context: Context?,
+        categoryLists: ArrayList<CategoryLists>?,
+        deviceId: String?
+    ) {
+        if (categoryLists == null || categoryLists.isEmpty()) {
+            return
+        }
+        WFLog.w(TAG, "setCategoryData : " + categoryLists.size)
+        synchronized(LockDatabase) {
+            convertCategoryPackageClass(categoryLists)
+            if (mDbManager == null) {
+                categoryLists.clear()
+                return
+            }
+            if (mDbManager!!.updateWatchFaceCategoryInfo(categoryLists, deviceId)) {
+                val versionValue = WatchfaceCategoryUtil.getCategoryVersionFromAsset(context)
+                if (versionValue != -1) {
+                    WatchfaceCategoryUtil.setCategoryListVersion(context, versionValue, deviceId)
+                }
+            }
+            categoryLists.clear()
+        }
+    }
+
+    @JvmStatic
+    fun getPreloadPackageName(className: String, deviceId: String?): String? {
+        var packageName = mCategoryPackageClass[className]
+        if (!TextUtils.isEmpty(className) && TextUtils.isEmpty(packageName)) {
+            val watchFace = getWatchfaceByClassName(className, deviceId)
+            if (watchFace != null) packageName = watchFace.packageName
+        }
+        return packageName
+    }
+
+    @JvmStatic
+    fun getPreloadClassName(packageName: String, deviceId: String?): String? {
+        if(mCategoryPackageClass.isNotEmpty()) {
+            mCategoryPackageClass.forEach{ (cName, pName) ->
+                if(pName == packageName)
+                    return cName
+            }
+        }
+        var className: String? = null
+            val watchFace = getWatchfaceByPackageName(className, deviceId)
+            if (watchFace != null) className = watchFace.className
+        return className
+    }
+
+    var mCategoryPackageClass = HashMap<String, String>()
+
+    @JvmStatic
+    fun convertCategoryPackageClass(categoryLists: ArrayList<CategoryLists>?) {
+        if (categoryLists == null || categoryLists.isEmpty()) {
+            return
+        }
+        for (list in categoryLists) {
+            if (list.categoryContentList == null || list.categoryContentList.isEmpty()) {
+                continue
+            }
+            for (category in list.categoryContentList) {
+                if (category == null || category.packageName == null || category.className == null) {
+                    continue
+                }
+                mCategoryPackageClass[category.className] = category.packageName
+            }
+        }
+    }
+
+    @JvmStatic
+    fun getCategoryData(deviceId: String?): ArrayList<CategoryLists>? {
+        var categoryLists: ArrayList<CategoryLists>? = null
+        if (mDbManager != null) {
+            categoryLists = mDbManager!!.getWatchFaceCategoryLists(deviceId)
+        }
+        if (categoryLists != null) {
+            WFLog.w(TAG, "getCategoryData : " + categoryLists.size)
+            if (categoryLists.isNotEmpty())
+                convertCategoryPackageClass(categoryLists)
+        }
+        //Add Edition Category
+        val availableWatchFaceList = getAvailableWatchfaceListInternal(deviceId)
+        val editionCategory = ArrayList<CategoryList>()
+        availableWatchFaceList.forEach {
+            for (watchFace in it.watchfaceList) {
+                val checkWatchface =
+                    PreloadedEditionWatchFace.WatchfaceEditionPreloadHashMap[watchFace.packageName]
+                if (checkWatchface != null
+                    && (checkWatchface.className == watchFace.className || WatchFaceConstant.DWF_CLASS_NAME == watchFace.className)) {
+                    WFLog.w(
+                        TAG,
+                        "getCategoryData:: added to edition category, Package name " + checkWatchface.packageName
+                    )
+                    val categoryItem = CategoryList(
+                        watchFace.displayName,
+                        "",
+                        watchFace.packageName,
+                        watchFace.className,
+                        watchFace.previewImageFileName,
+                        true
+                    )
+                    editionCategory.add(categoryItem)
+                }
+            }
+        }
+        if (!editionCategory.isEmpty()) {
+            val editionCategoryItem = CategoryLists(
+                WatchFaceConstant.WATCH_FACE_EDITION_CATEGORY_NAME,
+                WatchFaceConstant.CATEGORY_NAME_EDITION_TITLE,
+                null,
+                WatchFaceUtil.sortCategoryItem(editionCategory)
+            )
+            categoryLists!!.add(0, editionCategoryItem)
+        }
+        return categoryLists
+    }
+
+    private var preloadCount = -1
+
+    @JvmStatic
+    fun getPreloadCount(deviceId: String?): Int {
+        if (preloadCount == -1) {
+            if (mDbManager != null) {
+                preloadCount = mDbManager!!.getPreloadWatchfaceCount(deviceId)
+            }
+        }
+        WFLog.d(TAG,"getPreloadCount : $preloadCount")
+        return preloadCount
+    }
+
+    private val ConditionalDataMap = HashMap<String, Boolean>()
+
+    @JvmStatic
+    fun isConditionalComplicationDataExisted(context: Context?, deviceId: String): Boolean {
+        var isExisted = ConditionalDataMap[deviceId]
+        if (isExisted == null || isExisted == false) {
+            isExisted = WatchfacePreference.isConditionalComplicationDataExisted(context, deviceId)
+            ConditionalDataMap[deviceId] = isExisted
+        }
+        return isExisted
+    }
+
+    @JvmStatic
+    fun getConditionalComplication(context: Context?, deviceId: String?): ConditionalComplication? {
+        return if (deviceId == null) {
+            null
+        } else WatchfacePreference.getConditionalComplication(context, deviceId)
+    }
+
+    var mResourcePackageClass = HashMap<String, WatchfacePackageClassSet?>()
+
+    @JvmStatic
+    fun putPackageClassNameForResource(packageName: String, className: String?) {
+        val packageClassSet = mResourcePackageClass[packageName]
+        if (packageClassSet == null) {
+            mResourcePackageClass[packageName] = WatchfacePackageClassSet(packageName, className)
+        }
+    }
+
+    @JvmStatic
+    fun getClassNameForResource(packageName: String): String? {
+        return if (mResourcePackageClass[packageName] != null) {
+            mResourcePackageClass[packageName]!!.className
+        } else null
+    }
+
+    @JvmStatic
+    fun setVersionInfoForResource(packageName: String, className: String?, version: Int) {
+        if (mResourcePackageClass[packageName] == null) {
+            putPackageClassNameForResource(packageName, className)
+        }
+        if (mResourcePackageClass[packageName] != null) {
+            mResourcePackageClass[packageName]!!.versionInfo = version
+        }
+    }
+
+    @JvmStatic
+    fun getVersionInfoForResource(packageName: String): Int {
+        return if (mResourcePackageClass[packageName] != null) {
+            mResourcePackageClass[packageName]!!.versionInfo
+        } else {
+            val wf = getWatchfaceByPackageName(packageName, WatchFaceSharedUtil.getDeviceID())
+            wf?.version ?: 0
+        }
+    }
+
+    @JvmStatic
+    fun setWatchFaceDotInformation(dotInfo: WatchfaceDotInformation, deviceId: String) {
+        for(item in dotInfo.badgeList)
+            WFLog.d(TAG, "dotInfo : ${item.packageName}")
+
+        //mUpdateHashMap ??
+    }
+
+    @JvmStatic
+    fun setCustomizableItemResourceData(
+        packageName: String,
+        className: String,
+        customizableText: String,
+        deviceId: String?
+    ): Boolean {
+        var result = false
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                result = mDbManager!!.updateCustomizableItemResourceData(
+                packageName,
+                className,
+                customizableText,
+                deviceId
+            )
+        }
+        WFLog.w(TAG,"setCustomizableItemResourceData : $packageName  $className  $customizableText")
+        return result
+    }
+
+    @JvmStatic
+    fun getCustomizableItemResourceData(
+        packageName: String,
+        className: String,
+        deviceId: String?
+    ): String {
+        var customizableText = ""
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                customizableText = mDbManager!!.getCustomizableItemResourceData(packageName, className, deviceId)
+        }
+        WFLog.w(TAG,"getCustomizableItemResourceData : $packageName  $className  $customizableText")
+        return customizableText
+    }
+
+    @JvmStatic
+    fun changeCustomizableItemResourceStatus(
+        packageName: String,
+        className: String,
+        deviceId: String?,
+        update: Boolean?
+    ): Boolean {
+        var customizableText: String?
+        var result = false
+        synchronized(LockDatabase) {
+            if (mDbManager != null) {
+                customizableText =
+                    mDbManager!!.getCustomizableItemResourceData(packageName, className, deviceId)
+                val data =
+                    WatchFaceUtil.checkCustomizableText(customizableText)
+                if (data != null) {
+                    data.isUpdated = update!!
+                    result = setCustomizableItemResourceData(
+                        packageName,
+                        className,
+                        data.toJsonString(),
+                        deviceId
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    var mCustomizableItemJsonResource = HashMap<String, WatchfacePackageClassSet?>()
+
+    @JvmStatic
+    fun putPackageClassNameForJsonResource(packageName: String, className: String?) {
+        val packageClassSet = mCustomizableItemJsonResource[packageName]
+        if (packageClassSet == null) {
+            mCustomizableItemJsonResource[packageName] =
+                WatchfacePackageClassSet(packageName, className)
+        }
+    }
+
+    @JvmStatic
+    fun setVersionInfoForJsonResource(packageName: String, className: String?, version: Int) {
+        if (mCustomizableItemJsonResource[packageName] == null) {
+            putPackageClassNameForJsonResource(packageName, className)
+        }
+        if (mCustomizableItemJsonResource[packageName] != null) {
+            mCustomizableItemJsonResource[packageName]!!.versionInfo = version
+        }
+    }
+
+    @JvmStatic
+    fun getVersionInfoForJsonResource(packageName: String): Int {
+        return if (mCustomizableItemJsonResource[packageName] != null) {
+            mCustomizableItemJsonResource[packageName]!!.versionInfo
+        } else 0
+    }
+
+    @JvmStatic
+    fun isSupportNewFeature(context: Context?): Boolean {
+        if (isSupportNewFeature >= WatchFaceSharedConstant.NEW_FEATURE_AVAILABLE)
+            return true
+        isSupportNewFeature = WatchFaceSharedUtil.getOSCapability(context)
+        return isAvailableWatchfaceFeatureUsed(context)
+    }
+
+    @JvmStatic
+    fun getWatchfaceFeatureValue(): Int {
+        return isSupportNewFeature
+    }
+
+    @JvmStatic
+    fun setWatchfaceFeatureValue(set: Int) {
+        isSupportNewFeature = set
+    }
+
+    @JvmStatic
+    fun getWatchfaceOOBEResourceFileUri(): Uri? {
+        return oobe_fileUri
+    }
+
+    @JvmStatic
+    fun setWatchfaceOOBEResourceFileUri(uri: Uri?) {
+        oobe_fileUri = uri
+    }
+
+    @JvmStatic
+    fun setWatchfaceEditWithUserStyle(set: Boolean) {
+        isWatchfaceEditWithUserStyle = set
+    }
+
+    @JvmStatic
+    fun isWatchfaceEditWithUserStyle() : Boolean {
+        return isWatchfaceEditWithUserStyle
+    }
+
+
+
+//    @JvmStatic
+//    fun isWatchfaceUpdateEnable(packageName: String): Boolean {
+//        val result = mUpdateHashMap[packageName]
+//        return result ?: false
+//    }
 }
