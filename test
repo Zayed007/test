@@ -109,3 +109,150 @@ class WfBnrAremojiWork(cont: Context, param: WorkerParameters) : WfBnrWorkerBase
         val TAG = "WfBnrAremojiWork"
     }
 }
+
+package com.samsung.android.companionservice.watchface.bnr
+
+import android.content.Context
+import androidx.work.CoroutineWorker
+import androidx.work.Data
+import androidx.work.WorkerParameters
+import androidx.work.workDataOf
+import com.samsung.android.companionservice.watchface.util.WFLog
+import com.samsung.android.plugin.sharedlib.utils.copyFile
+import java.io.File
+
+open class WfBnrWorkerBase(cont: Context, param: WorkerParameters) : CoroutineWorker(cont, param) {
+    protected var mContext: Context? = null
+
+    override suspend fun doWork(): Result {
+        TODO("Not yet implemented")
+    }
+
+    open fun init(context: Context) {
+        mContext = context
+    }
+
+    open fun updateBackupFile() {
+        TODO("Not yet implemented")
+    }
+
+    open fun backupResource(file: File): Int {
+        WFLog.d(TAG, " backupResource ${file.absolutePath}")
+        return if (cleanup(file)) {
+            if (copyFile()) {
+                RESULT_SUCCESS
+            } else {
+                RESULT_CPY_FAILED
+            }
+        } else RESULT_CLEANUP_FAILED
+    }
+
+    open fun cleanUp(): Boolean {
+        return true
+    }
+
+    open fun restoreResource(file: File): Int {
+        WFLog.d(TAG, " restoreResource ${file.absolutePath}")
+        return if (cleanup(file)) {
+            if (copyFile()) {
+                RESULT_SUCCESS
+            } else {
+                RESULT_CPY_FAILED
+            }
+        } else RESULT_CLEANUP_FAILED
+
+    }
+
+    open fun cleanup(target: File): Boolean {
+        WFLog.d(TAG, "cleanup : ${target.absolutePath}")
+        var res = true
+        target?.let { targetFile ->
+            if (targetFile.exists()) {
+                targetFile.listFiles()?.let {
+                    it.forEach {
+                        if (!it.delete()) {
+                            if (res) res = false
+                        }
+                        WFLog.w(TAG, "${it.name}  deleted $res")
+                    }
+                }
+            } else {
+                targetFile.mkdirs()
+            }
+        }
+        return res
+    }
+
+    open fun copyFile(): Boolean {
+        return true
+    }
+
+    open fun copyDir(source: File, target: File) {
+        var makeDirectory = false
+        if (source.isDirectory) {
+            if (!target.exists()) {
+                makeDirectory = target.mkdir()
+            }
+            WFLog.d(TAG, "Value of MKDIR ::$makeDirectory")
+            val children = source.list()
+            if (children != null) {
+                for (i in children.indices) {
+                    copyDir(
+                        File(source, children[i]),
+                        File(target, children[i])
+                    )
+                }
+            }
+        } else {
+            copySpecificFile(source, target)
+        }
+    }
+
+    open fun copySpecificFile(source: File, target: File) {
+        return copyFile(source, target)
+    }
+
+    open fun setOutPutData(pn: String, fi: Int, reason: Int, isBackup: Boolean): Data {
+        return workDataOf(
+            WF_RESOURCE_PACKAGE_NAME to pn,
+            WF_RESOURCE_FAVORITE_ID to fi,
+            REASON to reason,
+            BACKUP_STATUS to isBackup
+        )
+    }
+
+    protected companion object {
+        const val TAG = "WfBnrWorkerBase"
+        const val WF_RESOURCE_PACKAGE_NAME = "packageName"
+        const val WF_RESOURCE_CLASS_NAME = "className"
+        const val WF_RESOURCE_FAVORITE_ID = "favoriteId"
+        const val ID = "id_"
+        const val GM_FOLDER_PATH = "gmfolderPath"
+        const val BACKUP_FOLDER = "backup"
+        const val GALLERY_FOLDER = "Gallery"
+        const val EMOJI_DATA_FOLDER = "galleryFolder"
+        const val CUSTOM_PREVIEW = "customize_preview"
+        const val RESULT_EXTENSION = "result.xml"
+        const val MYPHOTO_FOLDER = "MyPhoto"
+        const val MYPEBBLE_FOLDER = "MyPebble"
+        const val PHOTOSTICKER_FOLDER = "PhotoSticker"
+        const val AREMOJI_BACKUP_FOLDER = "com.samsung.android.watch.watchface.aremoji"
+        const val MYPHOTO_BACKUP_FOLDER = "com.samsung.android.watch.watchface.myphoto"
+        const val MYPEBBLE_BACKUP_FOLDER = "com.samsung.android.watch.watchface.mypebble"
+        const val PHOTOSTICKER_BACKUP_FOLDER = "com.samsung.android.watch.watchface.photosticker"
+        const val REASON = "reason"
+        const val RESULT_BACKUP_ALREADY_EXIST = 3
+        const val RESULT_SRC_NOT_EXIST = 2
+        const val RESULT_SUCCESS = 1
+        const val RESULT_UNKNOWN_EXCEPTION = 0
+        const val RESULT_CPY_FAILED = -3
+        const val RESULT_ZIP_FAILED = -4
+        const val RESULT_AVATAR_NOT_EXIST = -5
+        const val RESULT_CLEANUP_FAILED = -6
+        const val RESULT_UNZIP_FAILED = -7
+        const val RESULT_IS_DWF = -8
+        const val BACKUP_STATUS = "backup_status"
+        const val BACKUP_PREFIX = "backup_"
+
+    }
+}
