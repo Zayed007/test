@@ -1,90 +1,53 @@
-object CompanionServiceInterface{
-protected var mICompanionService: ICompanionServiceInterface? = null
-        fun getWatchFaceOrderType(deviceID: String?): WatchfaceOrderType {
-        try {
-            if (mICompanionService != null) {
-                return mICompanionService!!.getWatchFaceOrderType(deviceID)
-            } else {
-                WFLog.e(TAG, "getWatchFaceOrderType mICompanionService is null")
-                return WatchfaceOrderType(true, null)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            return WatchfaceOrderType(true, null)
-        }
-    }
-}
+package com.samsung.android.companionservice.watchface.data
 
-public class WatchfaceOrderType implements Parcelable {
-    private static final String TAG = "[WF]_" + WatchfaceOrderType.class.getSimpleName();
-    @SerializedName("isWatchSortByRecentsEnabled")
-    private boolean isWatchSortByRecentsEnabled;
-    @SerializedName("WatchFaceOrderType")
-    private String mWatchFaceOrderType;
+object AutoSyncData {
+    data class WatchfaceInfo (var pn : String?, var cn : String?, var fId : Int? )
+    private var autoSyncProcess = false
+    private var currentSyncWF : WatchfaceInfo? = null
+    private var syncImageData : Triple<ArrayList<String>?,ArrayList<String>?,ArrayList<String>?>? = null
 
-    public WatchfaceOrderType(boolean isRecentOrder, String oderType) {
-        isWatchSortByRecentsEnabled = isRecentOrder;
-        mWatchFaceOrderType = oderType;
+    @JvmStatic
+    fun clearAll(){
+        autoSyncProcess = false
+        currentSyncWF = null
+        syncImageData = null
     }
 
-    public WatchfaceOrderType(Parcel in) {
-        isWatchSortByRecentsEnabled = in.readByte() == 1;
-        mWatchFaceOrderType = in.readString();
+    @JvmStatic
+    fun setAutoSyncProcess(status: Boolean) {
+        autoSyncProcess = status
     }
 
-    public static final Creator<WatchfaceOrderType> CREATOR = new Creator<WatchfaceOrderType>() {
-        @Override
-        public WatchfaceOrderType createFromParcel(Parcel in) {
-            return new WatchfaceOrderType(in);
-        }
-
-        @Override
-        public WatchfaceOrderType[] newArray(int size) {
-            return new WatchfaceOrderType[size];
-        }
-    };
-
-    @Override
-    public int describeContents() {
-        return 0;
+    @JvmStatic
+    fun isAutoSyncOn() : Boolean{
+        return autoSyncProcess
     }
 
-    @Override
-    public void writeToParcel(Parcel dest, int flags) {
-        dest.writeByte((byte) (isWatchSortByRecentsEnabled ? 1 : 0));
-        dest.writeString(mWatchFaceOrderType);
+    @JvmStatic
+    fun setCurrentSyncWF(wfInfo : WatchfaceInfo) {
+        currentSyncWF = wfInfo
     }
 
-    public String getOrderType() {
-        if(!TextUtils.isEmpty(mWatchFaceOrderType))
-            return mWatchFaceOrderType;
-        else if(isWatchSortByRecentsEnabled)
-            return WatchFaceConstant.WATCHFACE_ORDER_TYPE_NEW_RECENT;
-        else
-            return WatchFaceConstant.WATCHFACE_ORDER_TYPE_NEW_CUSTOM;
+    @JvmStatic
+    fun getCurrentSyncWF() : WatchfaceInfo? {
+        return currentSyncWF
     }
 
-    public boolean getOrderTypeBoolean() {
-        if(!TextUtils.isEmpty(mWatchFaceOrderType)) {
-            return mWatchFaceOrderType.equals(WatchFaceConstant.WATCHFACE_ORDER_TYPE_NEW_RECENT);
-        }
-        return isWatchSortByRecentsEnabled;
+    @JvmStatic
+    fun putImageData(imageData : Triple<ArrayList<String>,ArrayList<String>,ArrayList<String>>?){
+        syncImageData = imageData
     }
 
-    public void setOrderType(boolean type) {
-        isWatchSortByRecentsEnabled = type;
+    @JvmStatic
+    fun getAddedList() : ArrayList<String>? {
+        return syncImageData?.let { it.second } ?: run { null }
     }
-
-    public void setOrderType(String type) {
-        mWatchFaceOrderType = type;
+    @JvmStatic
+    fun getDeletedList() : ArrayList<String>? {
+        return syncImageData?.let { it.third } ?: run { null }
     }
-
-    @Override
-    public String toString(){
-        StringBuilder result = new StringBuilder();
-        result.append("isRecent : " ).append(isWatchSortByRecentsEnabled);
-        result.append(", orderType : " ).append(mWatchFaceOrderType);
-        return result.toString();
+    @JvmStatic
+    fun getImageList() : ArrayList<String>? {
+        return syncImageData?.let { it.first } ?: run { null }
     }
-
 }
