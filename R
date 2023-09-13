@@ -1,77 +1,58 @@
-class CategoryListViewModelTest {
-    
-    private lateinit var viewModel: CategoryListViewModel
-    
-    // mock dependencies
-    private val categoryListRepository: CategoryListRepository = mockk()
-    private val categoryListObserver: Observer<List<CategoryList>> = mockk(relaxed = true)
-    private val errorObserver: Observer<String> = mockk(relaxed = true)
+object WatchfaceDataMap {
+        private var mDbManager: DbManager? = null
+        private val LockDatabase = Any()
 
-    @Before
-    fun setup() {
-        viewModel = CategoryListViewModel(categoryListRepository)
-        viewModel.categoryListLiveData.observeForever(categoryListObserver)
-        viewModel.errorLiveData.observeForever(errorObserver)
+        @JvmStatic
+    fun init(context: Context) {
+        if (mDbManager == null)
+            mDbManager = DbManager.getInstance(
+                getEncryptionContext(context)
+            )
     }
 
-    @After
-    fun tearDown() {
-        viewModel.categoryListLiveData.removeObserver(categoryListObserver)
-        viewModel.errorLiveData.removeObserver(errorObserver)
+        @JvmStatic
+    fun setWatchFaceVersion(
+        packageName: String,
+        className: String,
+        version: Int,
+        deviceID: String?
+    ) {
+        WFLog.w(TAG,"setWatchFaceVersion : $packageName  $className  $version")
+        synchronized(LockDatabase) {
+            if (mDbManager != null)
+                mDbManager!!.updateWatchfaceVersionInfo(
+                packageName,
+                className,
+                version,
+                deviceID
+            )
+        }
     }
+}
 
-    @Test
-    fun `when get category list successful`() {
-        // given
-        val categoryList = listOf<CategoryList>()
-        coEvery { categoryListRepository.getCategoryList() } returns Result.Success(categoryList)
+class FileEncryptionUtils {
+     companion object {
+                 @SuppressLint("NewApi")
+        @JvmStatic fun getEncryptionContext(context: Context): Context? {
+            @Suppress("SENSELESS_COMPARISON")
+            if (context == null) {
+                Log.i(TAG, "encryptionContext is null. so return")
+                return null
+            }
+            return if (isSupportFBE(context)) {
+                context.createDeviceProtectedStorageContext()
+            } else {
+                context
+            }
+        }
+     }
+}
 
-        // when
-        viewModel.loadCategoryList()
-
-        // then
-        verify { categoryListObserver.onChanged(categoryList) }
-        verify(exactly = 0) { errorObserver.onChanged(any()) }
-    }
-
-    @Test
-    fun `when get category list failed`() {
-        // given
-        val errorMessage = "Error getting category list"
-        coEvery { categoryListRepository.getCategoryList() } returns Result.Error(errorMessage)
-
-        // when
-        viewModel.loadCategoryList()
-
-        // then
-        verify(exactly = 0) { categoryListObserver.onChanged(any()) }
-        verify { errorObserver.onChanged(errorMessage) }
-    }
-
-    @Test
-    fun `when toggle download watch face`() {
-        // given
-        val categoryList = CategoryList("App 1", "App 1", "com.app1", "com.app1.MainActivity", "app1.png", false)
-        viewModel.setCategoryList(listOf(categoryList))
-
-        // when
-        viewModel.toggleDownloadWatchFace(0)
-
-        // then
-        assertEquals(true, categoryList.getDownloadWatchFace())
-    }
-
-    @Test
-    fun `when update category list`() {
-        // given
-        val categoryList = CategoryList("App 1", "App 1", "com.app1", "com.app1.MainActivity", "app1.png", false)
-        val updatedCategoryList = CategoryList("App 1", "App 1", "com.app1", "com.app1.MainActivity", "app1.png", true)
-        viewModel.setCategoryList(listOf(categoryList))
-
-        // when
-        viewModel.updateCategoryList(listOf(updatedCategoryList))
-
-        // then
-        assertEquals(listOf(updatedCategoryList), viewModel.getCategoryList())
+public final class DbManager {
+        public void updateWatchfaceVersionInfo(String packageName, String className, int version, String deviceId) {
+        ContentValues values = new ContentValues();
+        values.put(DbConstants.VERSION, version);
+        updateAvailableWfColumn(packageName, className, values, deviceId);
+        updateFavoriteWfColumn(packageName, className, values, deviceId);
     }
 }
