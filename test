@@ -1,16 +1,17 @@
-    public static boolean checkResultXmlFile(String resourceFolderPath, int favoriteId, String resultXmlFileName) {
-        boolean result = false;
-        File resultFile = new File(resourceFolderPath + File.separator + WatchFaceSharedConstant.ID + favoriteId + File.separator + resultXmlFileName);
-        if(!resultFile.exists()) {
-            WFLog.d(TAG, "checkResultXmlFile resultFile existed : " + resultFile.getAbsolutePath());
-            File resultDefaultFile = new File(resourceFolderPath + File.separator + resultXmlFileName);
-            if(resultDefaultFile.exists()) {
-                WFLog.d(TAG, "checkResultXmlFile resultDefaultFile : " + resultDefaultFile.getAbsolutePath());
-                result = SharedFileUtils.copyFile(resultDefaultFile, resultFile);
-            } else
-                WFLog.d(TAG, "checkResultXmlFile resultDefaultFile not existed");
-        } else
-            result = true;
-        WFLog.d(TAG, "checkResultXmlFile result : " + result);
+    public static ArrayList<File> getPatternedFileArray(String path, boolean isGif) {
+        ArrayList<File> result = null;
+        if (path.endsWith(File.separator)) {
+            path = path.substring(0, path.lastIndexOf(File.separator));
+        }
+        WFLog.d(TAG, "getPatternedFileArray:: " + path);
+        FileFilter ff = file -> !file.isDirectory() && (isGif == (file.getName().endsWith(WatchFaceConstant.GIF_EXTENSION)));
+        File[] files = new File(path).listFiles(ff);
+        if (files != null) {
+            result = new ArrayList<>(Arrays.asList(files));
+        }
+        WFLog.d(TAG, "getPatternedFileArray:: " + ((result != null) ? result.size() : "notExist"));
+        if (result == null) {
+            result = new ArrayList<>();
+        }
         return result;
     }
