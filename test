@@ -1,17 +1,5 @@
-    public static ArrayList<File> getPatternedFileArray(String path, boolean isGif) {
-        ArrayList<File> result = null;
-        if (path.endsWith(File.separator)) {
-            path = path.substring(0, path.lastIndexOf(File.separator));
-        }
-        WFLog.d(TAG, "getPatternedFileArray:: " + path);
-        FileFilter ff = file -> !file.isDirectory() && (isGif == (file.getName().endsWith(WatchFaceConstant.GIF_EXTENSION)));
-        File[] files = new File(path).listFiles(ff);
-        if (files != null) {
-            result = new ArrayList<>(Arrays.asList(files));
-        }
-        WFLog.d(TAG, "getPatternedFileArray:: " + ((result != null) ? result.size() : "notExist"));
-        if (result == null) {
-            result = new ArrayList<>();
-        }
-        return result;
+    public static Uri getFileUriFromPath(Context cont, String path) {
+        if (cont == null) return null;
+        File outFile = new File(cont.getFileStreamPath(path + WatchFaceConstant.ZIP_EXTENSION).getPath());
+        return (outFile.exists()) ? Uri.fromFile(outFile) : null;
     }
