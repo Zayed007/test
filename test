@@ -1,98 +1,16 @@
-public class WFLog {
-
-    private static final String TAG = "[WF]_";
-    private static StringBuffer mLogStrings;
-    private static final boolean isUserBinary = !("eng".equals(Build.TYPE ));
-    private static Pattern btAddressPattern = Pattern.compile("([0-9A-Fa-f]{2}[:-_]){4}");
-
-
-    public static void e(String tag, String msg) {
-        WMLog.Companion.d(LongLifeLogger.Category.WF, TAG, tag, "", msg);
-    }
-
-    public static void d(String tag, String msg) {
-        if(isUserBinary && !TextUtils.isEmpty(msg)){
-            String data = btAddressPattern.matcher(msg).replaceAll("##:##:##:##:");
-            Log.i(TAG + tag, data);
+    public static boolean checkResultXmlFile(String resourceFolderPath, int favoriteId, String resultXmlFileName) {
+        boolean result = false;
+        File resultFile = new File(resourceFolderPath + File.separator + WatchFaceSharedConstant.ID + favoriteId + File.separator + resultXmlFileName);
+        if(!resultFile.exists()) {
+            WFLog.d(TAG, "checkResultXmlFile resultFile existed : " + resultFile.getAbsolutePath());
+            File resultDefaultFile = new File(resourceFolderPath + File.separator + resultXmlFileName);
+            if(resultDefaultFile.exists()) {
+                WFLog.d(TAG, "checkResultXmlFile resultDefaultFile : " + resultDefaultFile.getAbsolutePath());
+                result = SharedFileUtils.copyFile(resultDefaultFile, resultFile);
+            } else
+                WFLog.d(TAG, "checkResultXmlFile resultDefaultFile not existed");
         } else
-            Log.i(TAG + tag, msg);
-    }
-
-    public static void i(String tag, String msg) {
-        if(isUserBinary && !TextUtils.isEmpty(msg)){
-            String data = btAddressPattern.matcher(msg).replaceAll("##:##:##:##:");
-            Log.i(TAG + tag, data);
-        } else
-            Log.i(TAG + tag, msg);
-    }
-
-    public static void v(String tag, String msg) {
-        if(isUserBinary && !TextUtils.isEmpty(msg)){
-            String data = btAddressPattern.matcher(msg).replaceAll("##:##:##:##:");
-            Log.v(TAG + tag, data);
-        } else
-            Log.v(TAG + tag, msg);
-    }
-
-    public static void w(String tag, String msg) {
-        WMLog.Companion.d(LongLifeLogger.Category.WF, TAG, tag, "", msg);
-    }
-
-    public static void w(String tag, String msg, Throwable tr) {
-        WMLog.Companion.d(LongLifeLogger.Category.WF, TAG, tag, "", msg);
-    }
-
-    public static int w(String tag, Throwable tr) {
-        return Log.w(TAG + tag, tr);
-    }
-
-    public static void resetLog(String log) {
-        mLogStrings = new StringBuffer(log);
-    }
-
-    public static void pushLog(String log) {
-        if (mLogStrings == null) {
-            WFLog.d(TAG, "pushLog() - mLogStrings is null. reset Log");
-            resetLog("unexpectedreset: ");
-        }
-        mLogStrings.append(log);
-
-        if (mLogStrings.length() > 4000) {
-            flushLog();
-        }
-    }
-
-    public static void flushLog() {
-        if (mLogStrings == null) {
-            return;
-        }
-
-        if (mLogStrings.length() > 4000) {
-            d(TAG, mLogStrings.substring(0, 4000));
-            resetLog(mLogStrings.substring(4000, mLogStrings.length()));
-        } else {
-            d(TAG, mLogStrings.toString());
-            mLogStrings = null;
-        }
-    }
-
-    //Function Tag
-    public static void d(String tag, String function, String msg) {
-        if(isUserBinary && !TextUtils.isEmpty(msg)){
-            String data = btAddressPattern.matcher(msg).replaceAll("##:##:##:##:");
-            Log.i(TAG + tag, data);
-        } else
-            Log.i(TAG + tag, function + msg);
-    }
-
-    public static void w(String tag, String function, String msg) {
-        WMLog.Companion.d(LongLifeLogger.Category.WF, TAG, tag, "", function + msg);
-    }
-
-    public static void e(String tag, String function, String msg) {
-        WMLog.Companion.d(LongLifeLogger.Category.WF, TAG, tag, "", function + msg);
-    }
-
-    public static void subscribeDumpListener(LongLifeLogger.LongLifeLogListener dumplistener){
-        WMLog.Companion.subscribeDumpListener(LongLifeLogger.Category.WF, dumplistener);
+            result = true;
+        WFLog.d(TAG, "checkResultXmlFile result : " + result);
+        return result;
     }
