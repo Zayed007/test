@@ -145,103 +145,170 @@ open class WfBnrWorkerBase(cont: Context, param: WorkerParameters) : CoroutineWo
     }
 }
 
-class WfBnrAremojiWork(cont: Context, param: WorkerParameters) : WfBnrWorkerBase(cont, param) {
+package com.samsung.android.companionservice.watchface.bnr
 
+import android.annotation.SuppressLint
+import android.content.Context
+import androidx.work.Data
+import androidx.work.WorkerParameters
+import com.samsung.android.companionapps.messagebnr.communication.wifi.WifiDirectTransferTask
+import com.samsung.android.companionservice.constant.WatchFaceConstant
+import com.samsung.android.companionservice.utils.Compress
+import com.samsung.android.companionservice.watchface.util.Decompress
+import com.samsung.android.companionservice.watchface.util.WFLog
+import com.samsung.android.plugin.sharedlib.utils.SharedFileUtils
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil.deleteDir
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+
+class WfBnrListZipWorker(cont: Context, param: WorkerParameters) : WfBnrWorkerBase(cont, param) {
     internal var srcPath: String? = ""
     internal var targetPath: String? = ""
-    internal var comparePath: String? = ""
     internal var src: File? = null
     internal var target: File? = null
-    internal var compare: File? = null
+    internal var path: String? = ""
     internal var output: Data? = null
     var isBackup = false
 
     @SuppressLint("RestrictedApi")
     override suspend fun doWork(): Result {
         return withContext(Dispatchers.IO) {
-            val packageName = inputData.getString(WF_RESOURCE_PACKAGE_NAME)
             val className = inputData.getString(WF_RESOURCE_CLASS_NAME)
-            var favoriteId = inputData.getInt(WF_RESOURCE_FAVORITE_ID, -1)
+            WFLog.d(TAG, "doWork for $className ")
             isBackup = inputData.getBoolean(BACKUP_STATUS, false)
-
+            val favo = inputData.getInt(WF_RESOURCE_FAVORITE_ID, -1)
+            val packageName =
+                if (isBackup) inputData.getString(WF_RESOURCE_PACKAGE_NAME) else className!!.substring(
+                    0,
+                    className!!.lastIndexOf('.')
+                )
+            var result = 1
             try {
-                WFLog.d(TAG, " WfBnrAremojiWork dowork")
-                @Suppress("VARIABLE_WITH_REDUNDANT_INITIALIZER") var result = 1
-                var path = inputData.getString(GM_FOLDER_PATH)
-                var resourceFolder = "$packageName${File.separator}$className"
-                var backupFolder =
-                    "$BACKUP_FOLDER${File.separator}$AREMOJI_BACKUP_FOLDER${File.separator}$favoriteId"
-
-                srcPath = path!!.plus(if (isBackup) resourceFolder else backupFolder)
+                path = inputData.getString(GM_FOLDER_PATH)
+                var resourceFolder = "$packageName${File.separator}$className${File.separator}"
+                var backupFolder = "backup${File.separator}$className"
+                srcPath = path.plus(if (isBackup) resourceFolder else backupFolder)
                 targetPath = path.plus(if (isBackup) backupFolder else resourceFolder)
-                comparePath =
-                    path!!.plus("$packageName${File.separator}$className${File.separator}$ID$favoriteId${File.separator}$EMOJI_DATA_FOLDER")
+                src = (if (isBackup) srcPath else srcPath.plus(".zip"))?.let { File(it) }
+                target = (if (isBackup) targetPath.plus(".zip") else targetPath)?.let { File(it) }
+                if (WatchFaceConstant.DWF_CLASS_NAME == className) {
+                    if (!isBackup) {
+                        SharedFileUtils.deleteFile(srcPath.plus(".zip"))
+                    }
+                    output = setOutPutData(packageName!!, favo, RESULT_IS_DWF, isBackup)
+                    Result.Success(output!!)
+                }
+                WFLog.d(TAG, "BNRList srcPath = $srcPath")
+                WFLog.d(TAG, "BNRList targetPath = $targetPath")
 
-                WFLog.d(TAG, " srcPath $srcPath")
-                WFLog.d(TAG, " comparePath $comparePath")
-                WFLog.d(TAG, " targetPath $targetPath")
+                if (isBackup && target!!.exists()) {
+                    WFLog.d(TAG, "WfBnrListZipWorker target is Exist")
+                    result = RESULT_BACKUP_ALREADY_EXIST
+                    output = setOutPutData(packageName!!, favo, result, isBackup)
+                    Result.Success()
+                } else {
+                    WFLog.d(TAG, "WfBnrListZipWorker target is not Exist")
+                }
+                WFLog.d(TAG, "WfBnrListZipWorker copy work start")
 
-                src = File(srcPath)
-                target = File(targetPath)
-                compare = File(comparePath)
-                if (!compare!!.exists()) {
+                if (!src!!.exists()) {
                     result = RESULT_SRC_NOT_EXIST
                 } else {
-                    result = if (isBackup) backupResource(target!!) else restoreResource()
+                    result = if (isBackup) backupResource() else restoreResource()
                 }
-                output = setOutPutData(packageName!!, favoriteId, result, isBackup)
+                output = setOutPutData(packageName!!, favo, result, isBackup)
                 if (result <= 0) {
                     Result.Failure(output!!)
                 } else {
                     Result.Success()
                 }
             } catch (e: Exception) {
-                WFLog.w(TAG, "WfAremojiWorker Exception : $e")
-                output =
-                    setOutPutData(packageName!!, favoriteId, RESULT_UNKNOWN_EXCEPTION, isBackup)
-                Result.Failure()
+                WFLog.w(TAG, "WfBnrListZipWorker Exception : $e")
+                output = setOutPutData(packageName!!, favo, RESULT_UNKNOWN_EXCEPTION, isBackup)
+                Result.Failure(output!!)
             }!!
         }
     }
 
-    private fun restoreResource(): Int {
+    private fun backupResource(): Int {
         return if (copyFile()) {
-            RESULT_SUCCESS
+            if (zipFile()) {
+                RESULT_SUCCESS
+            } else {
+                RESULT_ZIP_FAILED
+            }
         } else {
             RESULT_CPY_FAILED
         }
     }
 
-    override fun cleanup(target: File): Boolean {
-        return super.cleanup(target)
+    private fun restoreResource(): Int {
+        var a1 = srcPath!!.plus(".zip")
+        var a2 = targetPath!!.removeSuffix("/").let { it.substring(0, it.lastIndexOf("/")) }
+        WFLog.d(TAG, "restoreResource a1 : $a1")
+        WFLog.d(TAG, "restoreResource a2: $a2")
+        return if (Decompress.unzip(a1, a2)) {
+            WFLog.d(TAG, "restoreResource success")
+            RESULT_SUCCESS
+        } else {
+            WFLog.d(TAG, "restoreResource failed")
+            RESULT_UNZIP_FAILED
+        }
     }
 
+    fun zipFile(): Boolean {
+        WFLog.d(TAG, "zipFile BNRList");
+        var backupPath = path.plus("backup")
+        var zipPath = targetPath
+        var zipFilePath = targetPath.plus(".zip")
+        WFLog.d(TAG, "zipFile backupPath : $backupPath")
+        WFLog.d(TAG, "zipFile zipPath : $zipPath")
+        WFLog.d(TAG, "zipFile zipFilePath : $zipFilePath")
+        val cmp = Compress(zipFilePath, zipPath!!)
+        WFLog.w(TAG, "zipFile compress : ${cmp.zip()}")
+        return deleteDir(zipPath)
+    }
+
+
     override fun copyFile(): Boolean {
-        WFLog.d(TAG, "copyFile Aremoji")
-        compare!!.listFiles()?.let { compList ->
-            if (!compList.isNullOrEmpty()) {
-                compList.filter { it.name.startsWith("avatarsticker") }
-                    .forEach { compFile ->
-                        src!!.listFiles()?.let { fileList ->
-                            fileList.filter {
-                                it.nameWithoutExtension.equals(compFile.nameWithoutExtension) &&
-                                        it.name.endsWith(".zip")
-                            }.forEach {
-                                WFLog.d(TAG, "copyFile1 srcPath $it")
-                                var targetFile =
-                                    File(targetPath!!.plus("${File.separator}${it.name}"))
-                                WFLog.d(TAG, "copyFile1 targetpath $targetFile")
-                                copySpecificFile(it, targetFile)
-                            }
+        WFLog.d(TAG, "copyFile BNRList");
+        src!!.listFiles()?.let {
+            var zipDirEntry = it.filter { it.isDirectory && it.name.startsWith("id") }
+            if (!zipDirEntry.isNullOrEmpty()) {
+                for (dir in zipDirEntry) {
+                    dir.listFiles()?.let { child ->
+                        var tempPath = targetPath!!.plus("${File.separator}${dir.name}")
+                        var tempDir = File(tempPath)
+                        if (!tempDir.exists()) {
+                            tempDir.mkdirs()
                         }
+                        child.filter {
+                            it.name.endsWith(RESULT_EXTENSION) ||
+                                    it.name.contains(CUSTOM_PREVIEW) ||
+                                    ((it.isDirectory) && (it.name.equals(EMOJI_DATA_FOLDER)))
+                        }
+                            ?.forEach {
+                                var tempFile = File(tempPath.plus("${File.separator}${it.name}"))
+                                if (it.isDirectory) {
+                                    copyDir(it, tempFile)
+                                } else {
+                                    copySpecificFile(it, tempFile)
+                                }
+                            }
                     }
+                }
+            } else {
+                WFLog.d(TAG, "copyFile zipDirEntry is null");
             }
         }
+        WFLog.d(TAG, "copyFile end");
         return true
     }
 
-
     companion object {
-        val TAG = "WfBnrAremojiWork"
+        val TAG = "WfBnrListZipWorker"
     }
+
 }
