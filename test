@@ -1,233 +1,260 @@
 package com.samsung.android.companionservice.watchface.bnr
 
+import android.content.BroadcastReceiver
 import android.content.Context
-import androidx.work.CoroutineWorker
-import androidx.work.Data
-import androidx.work.WorkerParameters
-import androidx.work.workDataOf
+import android.content.Intent
+import android.text.TextUtils
+import com.google.android.libraries.wear.companion.watch.ConnectionState
+import com.samsung.android.app.watchmanager.plugin.libfactory.util.FileEncryptionUtils
+import com.samsung.android.companionservice.connection.sdkwrapper.ConnectionWrapper
+import com.samsung.android.companionservice.constant.WatchFaceConstant.FAVORITE_LIST_BNR
+import com.samsung.android.companionservice.linker.ConnectionCompanionLinker
+import com.samsung.android.companionservice.service.WRCompanionServiceInterface
 import com.samsung.android.companionservice.watchface.util.WFLog
-import com.samsung.android.plugin.sharedlib.utils.copyFile
+import com.samsung.android.companionservice.watchface.util.WatchFaceUtil
+import com.samsung.android.plugin.sharedlib.utils.SharedFileUtils
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedConstant
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil.getDeviceID
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil.getWatchfaceFolderPath
+import com.samsung.android.smartswitchfileshare.FileShareHelper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.File
 
-open class WfBnrWorkerBase(cont: Context, param: WorkerParameters) : CoroutineWorker(cont, param) {
-    protected var mContext: Context? = null
-
-    override suspend fun doWork(): Result {
-        TODO("Not yet implemented")
-    }
-
-    open fun init(context: Context) {
-        mContext = context
-    }
-
-    open fun updateBackupFile() {
-        TODO("Not yet implemented")
-    }
-
-    open fun backupResource(file: File): Int {
-        WFLog.d(TAG, " backupResource ${file.absolutePath}")
-        return if (cleanup(file)) {
-            if (copyFile()) {
-                RESULT_SUCCESS
-            } else {
-                RESULT_CPY_FAILED
+class WfSmartSwitchBnrReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val message = intent.action
+        WFLog.d(TAG, "OnReceive - $message")
+        when (message) {
+            WfBnrConstants.WATCHFACE_BACKUP_REQ,
+            WfBnrConstants.WATCHFACE_RESTORE_REQ -> {
+                var instance = WatchfaceBnRManager.getInstance(context)
+                instance.setContext(context)
+                instance.onStartCommand(intent, 0, 0)
             }
-        } else RESULT_CLEANUP_FAILED
-    }
-
-    open fun cleanUp(): Boolean {
-        return true
-    }
-
-    open fun restoreResource(file: File): Int {
-        WFLog.d(TAG, " restoreResource ${file.absolutePath}")
-        return if (cleanup(file)) {
-            if (copyFile()) {
-                RESULT_SUCCESS
-            } else {
-                RESULT_CPY_FAILED
+            WfBnrConstants.WATCHFACE_LIST_BACKUP_REQ -> {
+                backUpWatchfaceList(context, intent)
             }
-        } else RESULT_CLEANUP_FAILED
-
-    }
-
-    open fun cleanup(target: File): Boolean {
-        WFLog.d(TAG, "cleanup : ${target.absolutePath}")
-        var res = true
-        target?.let { targetFile ->
-            if (targetFile.exists()) {
-                targetFile.listFiles()?.let {
-                    it.forEach {
-                        if (!it.delete()) {
-                            if (res) res = false
-                        }
-                        WFLog.w(TAG, "${it.name}  deleted $res")
-                    }
-                }
-            } else {
-                targetFile.mkdirs()
+            WfBnrConstants.WATCHFACE_LIST_RESTORE_REQ -> {
+                restoreWatchfaceList(context, intent)
             }
-        }
-        return res
-    }
-
-    open fun copyFile(): Boolean {
-        return true
-    }
-
-    open fun copyDir(source: File, target: File) {
-        var makeDirectory = false
-        if (source.isDirectory) {
-            if (!target.exists()) {
-                makeDirectory = target.mkdir()
-            }
-            WFLog.d(TAG, "Value of MKDIR ::$makeDirectory")
-            val children = source.list()
-            if (children != null) {
-                for (i in children.indices) {
-                    copyDir(
-                        File(source, children[i]),
-                        File(target, children[i])
-                    )
-                }
-            }
-        } else {
-            copySpecificFile(source, target)
+            else -> {}
         }
     }
 
-    open fun copySpecificFile(source: File, target: File) {
-        return copyFile(source, target)
-    }
-
-    open fun setOutPutData(pn: String, fi: Int, reason: Int, isBackup: Boolean): Data {
-        return workDataOf(
-            WF_RESOURCE_PACKAGE_NAME to pn,
-            WF_RESOURCE_FAVORITE_ID to fi,
-            REASON to reason,
-            BACKUP_STATUS to isBackup
+    fun backUpResponse(cont: Context, intent: Intent, deviceId: String?) {
+        backup(
+            cont,
+            intent,
+            WfBnrConstants.WATCHFACE_BACKUP_RES,
+            getResourceBackupFolderPath(cont, deviceId),
+            deviceId
         )
     }
 
-    protected companion object {
-        const val TAG = "WfBnrWorkerBase"
-        const val WF_RESOURCE_PACKAGE_NAME = "packageName"
-        const val WF_RESOURCE_CLASS_NAME = "className"
-        const val WF_RESOURCE_FAVORITE_ID = "favoriteId"
-        const val ID = "id_"
-        const val GM_FOLDER_PATH = "gmfolderPath"
-        const val BACKUP_FOLDER = "backup"
-        const val GALLERY_FOLDER = "Gallery"
-        const val EMOJI_DATA_FOLDER = "galleryFolder"
-        const val CUSTOM_PREVIEW = "customize_preview"
-        const val RESULT_EXTENSION = "result.xml"
-        const val MYPHOTO_FOLDER = "MyPhoto"
-        const val MYPEBBLE_FOLDER = "MyPebble"
-        const val PHOTOSTICKER_FOLDER = "PhotoSticker"
-        const val AREMOJI_BACKUP_FOLDER = "com.samsung.android.watch.watchface.aremoji"
-        const val MYPHOTO_BACKUP_FOLDER = "com.samsung.android.watch.watchface.myphoto"
-        const val MYPEBBLE_BACKUP_FOLDER = "com.samsung.android.watch.watchface.mypebble"
-        const val PHOTOSTICKER_BACKUP_FOLDER = "com.samsung.android.watch.watchface.photosticker"
-        const val REASON = "reason"
-        const val RESULT_BACKUP_ALREADY_EXIST = 3
-        const val RESULT_SRC_NOT_EXIST = 2
-        const val RESULT_SUCCESS = 1
-        const val RESULT_UNKNOWN_EXCEPTION = 0
-        const val RESULT_CPY_FAILED = -3
-        const val RESULT_ZIP_FAILED = -4
-        const val RESULT_AVATAR_NOT_EXIST = -5
-        const val RESULT_CLEANUP_FAILED = -6
-        const val RESULT_UNZIP_FAILED = -7
-        const val RESULT_IS_DWF = -8
-        const val BACKUP_STATUS = "backup_status"
-        const val BACKUP_PREFIX = "backup_"
-
+    fun getResourceBackupFolderPath(context: Context?, deviceId: String?): File? {
+        val filesDirectory =
+            context?.let { FileEncryptionUtils.getEncryptionContext(it)?.filesDir }
+        return File(StringBuilder().apply {
+            append(
+                filesDirectory
+            ).append(File.separator)
+            append(deviceId).append(File.separator)
+            append(WatchFaceSharedConstant.WATCHFACE_RESOURCE_FOLDER_NAME).append(File.separator)
+            append(WatchFaceSharedConstant.WF_BACKUP_FOLDER_NAME)
+        }.toString())
     }
-}
 
-package com.samsung.android.companionservice.watchface.bnr
-
-import android.annotation.SuppressLint
-import android.content.Context
-import androidx.work.Data
-import androidx.work.WorkerParameters
-import com.samsung.android.companionservice.watchface.util.WFLog
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.File
-
-class WfBnrMyPebbleWork(cont: Context, param: WorkerParameters) : WfBnrWorkerBase(cont, param) {
-
-    internal var srcPath: String? = ""
-    internal var targetPath: String? = ""
-    internal var src: File? = null
-    internal var target: File? = null
-    internal var output: Data? = null
-    var isBackup = false
-
-    @SuppressLint("RestrictedApi")
-    override suspend fun doWork(): Result {
-        return withContext(Dispatchers.IO) {
-            var path = inputData.getString(GM_FOLDER_PATH)
-            var packageName = inputData.getString(WF_RESOURCE_PACKAGE_NAME)
-            var favoriteId = inputData.getInt(WF_RESOURCE_FAVORITE_ID, -1)
-            isBackup = inputData.getBoolean(BACKUP_STATUS, false)
-
-            try {
-                WFLog.d(TAG, " WfBnrMyPebbleWork dowork")
-                @Suppress("VARIABLE_WITH_REDUNDANT_INITIALIZER")
-                var result = 1
-                var resourceFolder =
-                    "$GALLERY_FOLDER${File.separator}$MYPEBBLE_FOLDER${File.separator}$ID$favoriteId"
-                var backupFolder =
-                    "$BACKUP_FOLDER${File.separator}$MYPEBBLE_BACKUP_FOLDER${File.separator}$favoriteId"
-                srcPath = path.plus(if (isBackup) resourceFolder else backupFolder)
-                targetPath = path.plus(if (isBackup) backupFolder else resourceFolder)
-
-                src = File(srcPath)
-                target = File(targetPath)
-                if (!src!!.exists()) {
-                    result = RESULT_SRC_NOT_EXIST
-                } else {
-                    result = backupResource(target!!)
-                }
-                output = setOutPutData(packageName!!, favoriteId, result, isBackup)
-                if (result <= 0) {
-                    Result.Failure(output!!)
-                } else {
-                    Result.Success()
-                }
-            } catch (e: Exception) {
-                WFLog.d(TAG, "WfBnrMyPebbleWork Exception : $e")
-                output =
-                    setOutPutData(packageName!!, favoriteId, RESULT_UNKNOWN_EXCEPTION, isBackup)
-                Result.Failure()
-            }!!
+    private fun backUpWatchfaceList(context: Context, intent: Intent) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val nodeId = intent.getStringExtra(WfBnrConstants.EXTRA_WATCH_DEVICE_ID)
+            val deviceId = nodeId?.let { ConnectionCompanionLinker.getBTAddressFromNodeId(it) }
+            WFLog.d(TAG, "backUpWatchfaceList : nodeID $nodeId , deviceId $deviceId")
+            backup(
+                context,
+                intent,
+                WfBnrConstants.WATCHFACE_LIST_BACKUP_RES,
+                getWatchfaceListBnrPath(context, deviceId),
+                deviceId
+            )
         }
     }
 
-    override fun cleanup(target: File): Boolean {
-        return super.cleanup(target)
+    private fun restoreWatchfaceList(context: Context, intent: Intent) {
+        if (getWatchConnectionState(context) == ConnectionState.DISCONNECTED) {
+            WFLog.d(TAG, "restoreWatchfaceList - watch disconnected")
+            sendResultResponse(
+                context,
+                WfBnrConstants.WATCHFACE_LIST_RESTORE_RES,
+                WfBnrConstants.RESULT_FAIL,
+                intent.getStringExtra(WfBnrConstants.EXTRA_SOURCE),
+                intent.getStringExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME)
+            )
+            return
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            var deviceId = getDeviceID(context)
+            val dstFile = getWatchfaceListBnrPath(context, deviceId)
+            if (dstFile != null && dstFile.exists()) {
+                SharedFileUtils.deleteFile(dstFile.path)
+            }
+
+            if (restore(
+                    context,
+                    intent,
+                    WfBnrConstants.WATCHFACE_LIST_RESTORE_RES,
+                    File(getWatchfaceFolderPath(context))
+                ) == WfBnrConstants.RESULT_SUCCESS
+            ) {
+                WFLog.w(TAG, "restoreWatchfaceList - send restore data")
+                WRCompanionServiceInterface.restoreFavoriteInfo(deviceId)
+            } else {
+                WFLog.w(TAG, "restoreWatchfaceList - restore data failed")
+            }
+            writeLog(context, deviceId, false)
+        }
     }
 
-    override fun copyFile(): Boolean {
-        src!!.listFiles()?.let { fileList ->
-            fileList.forEach {
-                WFLog.d(TAG, "copyFile1 srcPath $it")
-                var targetFile = File(targetPath!!.plus("${File.separator}${it.name}"))
-                if (!targetFile.exists()) {
-                    WFLog.d(TAG, "copyFile1 targetpath $targetFile")
-                    copySpecificFile(it, targetFile)
+
+    fun watchfaceResourceRestore(): File? {
+        //TODO_ PROCESS for  WatchfaceREsource Backup
+        return null  // backup Folder Path
+    }
+
+    private fun getWatchfaceListBnrPath(context: Context?, deviceId: String?): File? {
+        if (deviceId.isNullOrEmpty()) {
+            return null
+        }
+
+        val filesDirectory =
+            context?.let { FileEncryptionUtils.getEncryptionContext(it)?.filesDir }
+        return File(StringBuilder().apply {
+            append(
+                filesDirectory
+            ).append(File.separator)
+            append(deviceId).append(File.separator)
+            append(WatchFaceSharedConstant.WATCHFACE_RESOURCE_FOLDER_NAME).append(File.separator)
+            append(FAVORITE_LIST_BNR)
+        }.toString())
+    }
+
+    private fun getWatchConnectionState(context: Context): ConnectionState {
+        val lastConnectedDeviceId = getDeviceID(context)
+        WFLog.d(TAG, "getWatchConnectionState $lastConnectedDeviceId")
+
+        if (TextUtils.isEmpty(lastConnectedDeviceId)) {
+            return ConnectionState.DISCONNECTED
+        }
+
+        val connectionState = ConnectionWrapper.getConnectionState(lastConnectedDeviceId)
+        if (connectionState != null) {
+            WFLog.d(TAG, "getWatchConnectionState", "ConnectionState: $connectionState")
+            if (connectionState == ConnectionState.BLUETOOTH)
+                return connectionState
+        } else {
+            WFLog.e(TAG, "getWatchConnectionState : connectionState is Null.")
+        }
+
+        return ConnectionState.DISCONNECTED
+    }
+
+    private fun backup(
+        context: Context,
+        intent: Intent,
+        response: String,
+        sourceFile: File?,
+        deviceId: String?
+    ) {
+        val source = intent.getStringExtra(WfBnrConstants.EXTRA_SOURCE)
+        val sessionTime = intent.getStringExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME)
+        val extraAction =
+            intent.getIntExtra(WfBnrConstants.EXTRA_ACTION, WfBnrConstants.ACTION_BACKUP_RESTORE)
+        var result = WfBnrConstants.RESULT_FAIL
+
+        if (extraAction == WfBnrConstants.ACTION_BACKUP_CANCEL) {
+            WFLog.e(TAG, "backup - action value cancel")
+            return
+        }
+        sourceFile?.let { file ->
+            if (file.exists()) {
+                try {
+                    val fileShareHelper = FileShareHelper(context, TAG)
+                    fileShareHelper.copy(file, intent)
+                    result = WfBnrConstants.RESULT_SUCCESS
+                    writeLog(context, deviceId, true)
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
+            } else {
+                WFLog.w(TAG, "backup - file doesn't exist")
             }
         }
-        return true
+        sendResultResponse(context, response, result, source, sessionTime)
     }
 
+    private fun restore(
+        context: Context,
+        intent: Intent,
+        response: String,
+        dstFile: File?
+    ): Int {
+        val source = intent.getStringExtra(WfBnrConstants.EXTRA_SOURCE)
+        val sessionTime = intent.getStringExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME)
+        var result = WfBnrConstants.RESULT_FAIL
+        dstFile?.let {
+            try {
+                val fileShareHelper = FileShareHelper(context, TAG)
+                fileShareHelper.copy(intent, it)
+                result = WfBnrConstants.RESULT_SUCCESS
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        sendResultResponse(context, response, result, source, sessionTime)
+        return result
+    }
+
+    private fun sendResultResponse(
+        context: Context,
+        msg: String,
+        errorCode: Int,
+        source: String?,
+        sessionTime: String?
+    ) {
+        val intent = Intent(msg)
+        WFLog.d(TAG, "sendResultResponse $msg $source")
+        intent.putExtra(
+            WfBnrConstants.RESULT,
+            if (errorCode == WfBnrConstants.RESULT_SUCCESS) WfBnrConstants.RESULT_SUCCESS else WfBnrConstants.RESULT_FAIL
+        )
+        intent.putExtra(WfBnrConstants.EXTRA_ERR_CODE, errorCode)
+        intent.putExtra(WfBnrConstants.EXTRA_REQ_SIZE, 0)
+        intent.putExtra(WfBnrConstants.EXTRA_SOURCE, source)
+        intent.putExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME, sessionTime)
+        context.sendBroadcast(intent, WfBnrConstants.SS_WEAR_PROVIDER_PERMISSION)
+    }
+
+    private fun writeLog(context: Context, deviceId: String?, isBackUp : Boolean){
+        val status = if(isBackUp)"BackUp" else "Restore"
+        WatchFaceUtil.convertDataSyncList(context, deviceId)?.let{ wfListHash ->
+            if(wfListHash.isNotEmpty()){
+                WFLog.w(TAG, "wf$status:List: favoriteList File Exist")
+                for (key in wfListHash.keys) {
+                    WFLog.w(TAG, "wf$status: className : $key")
+                    wfListHash[key]?.let { values ->
+                        WFLog.w(TAG, "wf$status: favoriteIds : $values")
+                    }
+                }
+            } else {
+                WFLog.w(TAG, "wf$status: no List in favoriteList file")
+            }
+        }
+    }
 
     companion object {
-        val TAG = "WfBnrMyPebbleWork"
+        const val TAG = "WfSmartSwitchBnrReceiver"
     }
 }
-
 
