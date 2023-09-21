@@ -1,171 +1,464 @@
 package com.samsung.android.companionservice.watchface.bnr
 
-import android.content.BroadcastReceiver
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
-import android.text.TextUtils
+import androidx.lifecycle.*
+import androidx.lifecycle.Observer
+import androidx.work.*
 import com.google.android.libraries.wear.companion.watch.ConnectionState
 import com.samsung.android.app.watchmanager.plugin.libfactory.util.FileEncryptionUtils
 import com.samsung.android.companionservice.connection.sdkwrapper.ConnectionWrapper
-import com.samsung.android.companionservice.constant.WatchFaceConstant.FAVORITE_LIST_BNR
+import com.samsung.android.companionservice.constant.WatchFaceConstant
 import com.samsung.android.companionservice.linker.ConnectionCompanionLinker
 import com.samsung.android.companionservice.service.WRCompanionServiceInterface
+import com.samsung.android.companionservice.watchface.manager.WatchfaceDataMap
 import com.samsung.android.companionservice.watchface.util.WFLog
 import com.samsung.android.companionservice.watchface.util.WatchFaceUtil
-import com.samsung.android.plugin.sharedlib.utils.SharedFileUtils
+import com.samsung.android.companionservice.watchface.util.WatchFaceUtil.getBackupFolderPath
 import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedConstant
-import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil.getDeviceID
-import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil.getWatchfaceFolderPath
+import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil
 import com.samsung.android.smartswitchfileshare.FileShareHelper
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.*
 
-class WfSmartSwitchBnrReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        val message = intent.action
-        WFLog.d(TAG, "OnReceive - $message")
-        when (message) {
-            WfBnrConstants.WATCHFACE_BACKUP_REQ,
-            WfBnrConstants.WATCHFACE_RESTORE_REQ -> {
-                var instance = WatchfaceBnRManager.getInstance(context)
-                instance.setContext(context)
-                instance.onStartCommand(intent, 0, 0)
+public class WatchfaceBnRManager(cont: Context) : WfBnrLifeCycleService(), LifecycleOwner {
+
+    private val mServiceLifecycleDispatcher = ServiceLifecycleDispatcher(this)
+    private var mContext: Context? = cont
+    private var mDeViceId: String? = ""
+    private var workmgr: WorkManager? = null
+    private var workInfo: LiveData<MutableList<WorkInfo>>? = null
+    private var bnrIntentHash: HashMap<String, Intent> = HashMap()
+    private var mUUIDList: HashMap<UUID, String> = HashMap()
+
+    override val lifecycle: Lifecycle
+        get() = mServiceLifecycleDispatcher.lifecycle
+
+    override fun onCreate() {
+        mServiceLifecycleDispatcher.onServicePreSuperOnCreate()
+        super.onCreate()
+    }
+
+    override fun onStart(intent: Intent?, startId: Int) {
+        mServiceLifecycleDispatcher.onServicePreSuperOnStart()
+        super.onStart(intent, startId)
+    }
+
+    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
+        mServiceLifecycleDispatcher.onServicePreSuperOnStart()
+        lifecycleScope.launch {}
+        WFLog.d(TAG, "onStartCommand Service Started")
+
+        intent.action?.let { action ->
+            bnrIntentHash.let {
+                if (!it.containsKey(action)) {
+                    it.put(action, intent)
+                    when (action) {
+                        WfBnrConstants.WATCHFACE_BACKUP_REQ -> {
+                            WFLog.d(TAG, "onStartCommand watchfaceResourceBackup start")
+                            val nodeId = intent.getStringExtra(WfBnrConstants.EXTRA_WATCH_DEVICE_ID)
+                            mDeViceId =
+                                nodeId?.let { ConnectionCompanionLinker.getBTAddressFromNodeId(it) }
+                            if (mDeViceId.isNullOrEmpty()) {
+                                WFLog.d(TAG, "deviceID is not exist ")
+                                backup(
+                                    mContext!!, intent,
+                                    WfBnrConstants.WATCHFACE_BACKUP_RES,
+                                    null
+                                )
+                            } else {
+                                if (watchfaceResourceBackUpProgress(mContext!!)) {
+                                    WFLog.d(TAG, "onStartCommand watchfaceResourceBackup is true")
+                                }
+                            }
+                        }
+                        WfBnrConstants.WATCHFACE_RESTORE_REQ -> {
+                            mDeViceId = WatchFaceSharedUtil.getDeviceID(mContext)
+                            if (getWatchConnectionState(mContext!!) == ConnectionState.BLUETOOTH) {
+
+                                getBackupFolderPath(mContext!!, mDeViceId!!).removeSuffix("/").let {
+                                    WFLog.d(TAG, "backupFolder : $it")
+                                    if (WatchFaceSharedUtil.isFileExist(it)) {
+                                        WatchFaceSharedUtil.deleteDir(it)
+                                    }
+                                }
+                            }
+                            if (restore(
+                                    mContext!!,
+                                    intent,
+                                    WfBnrConstants.WATCHFACE_RESTORE_RES,
+                                    File(WatchFaceSharedUtil.getWatchfaceFolderPath(mContext!!))
+                                ) == WfBnrConstants.RESULT_SUCCESS
+                            ) {
+                                if (watchfaceResourceRestoreProgress(mContext!!)) {
+                                    WFLog.d(
+                                        TAG,
+                                        "onStartCommand Resource restore Succeed  $mDeViceId"
+                                    )
+                                } else {
+                                    WFLog.e(
+                                        TAG,
+                                        "onStartCommand Resource restore Failed during copy to resource Folder"
+                                    )
+                                }
+                            } else {
+                                WFLog.e(
+                                    TAG,
+                                    "onStartCommand Resource restore Failed at FileSharing"
+                                )
+                            }
+                        }
+                    }
+                }
             }
-            WfBnrConstants.WATCHFACE_LIST_BACKUP_REQ -> {
-                backUpWatchfaceList(context, intent)
-            }
-            WfBnrConstants.WATCHFACE_LIST_RESTORE_REQ -> {
-                restoreWatchfaceList(context, intent)
-            }
-            else -> {}
         }
-    }
-
-    fun backUpResponse(cont: Context, intent: Intent, deviceId: String?) {
-        backup(
-            cont,
-            intent,
-            WfBnrConstants.WATCHFACE_BACKUP_RES,
-            getResourceBackupFolderPath(cont, deviceId),
-            deviceId
-        )
-    }
-
-    fun getResourceBackupFolderPath(context: Context?, deviceId: String?): File? {
-        val filesDirectory =
-            context?.let { FileEncryptionUtils.getEncryptionContext(it)?.filesDir }
-        return File(StringBuilder().apply {
-            append(
-                filesDirectory
-            ).append(File.separator)
-            append(deviceId).append(File.separator)
-            append(WatchFaceSharedConstant.WATCHFACE_RESOURCE_FOLDER_NAME).append(File.separator)
-            append(WatchFaceSharedConstant.WF_BACKUP_FOLDER_NAME)
-        }.toString())
-    }
-
-    private fun backUpWatchfaceList(context: Context, intent: Intent) {
-        CoroutineScope(Dispatchers.IO).launch {
-            val nodeId = intent.getStringExtra(WfBnrConstants.EXTRA_WATCH_DEVICE_ID)
-            val deviceId = nodeId?.let { ConnectionCompanionLinker.getBTAddressFromNodeId(it) }
-            WFLog.d(TAG, "backUpWatchfaceList : nodeID $nodeId , deviceId $deviceId")
-            backup(
-                context,
-                intent,
-                WfBnrConstants.WATCHFACE_LIST_BACKUP_RES,
-                getWatchfaceListBnrPath(context, deviceId),
-                deviceId
-            )
-        }
-    }
-
-    private fun restoreWatchfaceList(context: Context, intent: Intent) {
-        if (getWatchConnectionState(context) == ConnectionState.DISCONNECTED) {
-            WFLog.d(TAG, "restoreWatchfaceList - watch disconnected")
-            sendResultResponse(
-                context,
-                WfBnrConstants.WATCHFACE_LIST_RESTORE_RES,
-                WfBnrConstants.RESULT_FAIL,
-                intent.getStringExtra(WfBnrConstants.EXTRA_SOURCE),
-                intent.getStringExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME)
-            )
-            return
-        }
-
-        CoroutineScope(Dispatchers.IO).launch {
-            var deviceId = getDeviceID(context)
-            val dstFile = getWatchfaceListBnrPath(context, deviceId)
-            if (dstFile != null && dstFile.exists()) {
-                SharedFileUtils.deleteFile(dstFile.path)
-            }
-
-            if (restore(
-                    context,
-                    intent,
-                    WfBnrConstants.WATCHFACE_LIST_RESTORE_RES,
-                    File(getWatchfaceFolderPath(context))
-                ) == WfBnrConstants.RESULT_SUCCESS
-            ) {
-                WFLog.w(TAG, "restoreWatchfaceList - send restore data")
-                WRCompanionServiceInterface.restoreFavoriteInfo(deviceId)
-            } else {
-                WFLog.w(TAG, "restoreWatchfaceList - restore data failed")
-            }
-            writeLog(context, deviceId, false)
-        }
-    }
-
-
-    fun watchfaceResourceRestore(): File? {
-        //TODO_ PROCESS for  WatchfaceREsource Backup
-        return null  // backup Folder Path
-    }
-
-    private fun getWatchfaceListBnrPath(context: Context?, deviceId: String?): File? {
-        if (deviceId.isNullOrEmpty()) {
-            return null
-        }
-
-        val filesDirectory =
-            context?.let { FileEncryptionUtils.getEncryptionContext(it)?.filesDir }
-        return File(StringBuilder().apply {
-            append(
-                filesDirectory
-            ).append(File.separator)
-            append(deviceId).append(File.separator)
-            append(WatchFaceSharedConstant.WATCHFACE_RESOURCE_FOLDER_NAME).append(File.separator)
-            append(FAVORITE_LIST_BNR)
-        }.toString())
+        return super.onStartCommand(intent, flags, startId)
     }
 
     private fun getWatchConnectionState(context: Context): ConnectionState {
-        val lastConnectedDeviceId = getDeviceID(context)
-        WFLog.d(TAG, "getWatchConnectionState $lastConnectedDeviceId")
-
-        if (TextUtils.isEmpty(lastConnectedDeviceId)) {
+        WFLog.d(TAG, "getWatchConnectionState $mDeViceId")
+        ConnectionWrapper.getConnectionState(mDeViceId)?.let {
+            return it
+        } ?: run {
             return ConnectionState.DISCONNECTED
         }
+    }
 
-        val connectionState = ConnectionWrapper.getConnectionState(lastConnectedDeviceId)
-        if (connectionState != null) {
-            WFLog.d(TAG, "getWatchConnectionState", "ConnectionState: $connectionState")
-            if (connectionState == ConnectionState.BLUETOOTH)
-                return connectionState
+    override fun onDestroy() {
+        WFLog.d(TAG, "onDestroy")
+        removeObserver()
+        bnrIntentHash.let { it.clear() }
+        mServiceLifecycleDispatcher.onServicePreSuperOnDestroy()
+        super.onDestroy()
+    }
+
+    fun removeObserver() {
+        WFLog.d(TAG, "removeObserver")
+        workmgr?.let {
+            WFLog.d(TAG, "remove certain observers")
+            it.cancelAllWorkByTag(WfBnrConstants.WF_BNR_RESOURCE_TAG)
+            it.cancelAllWork()
+            it.pruneWork()
+        }
+        removeResourceBnrObserver()
+    }
+
+    fun removeResourceBnrObserver() {
+        if (workInfo!!.hasActiveObservers() || workInfo!!.hasObservers()) {
+            WFLog.d(TAG, "removeResourceBackupObserver has observers")
+            workInfo?.removeObservers(this)
         } else {
-            WFLog.e(TAG, "getWatchConnectionState : connectionState is Null.")
+            WFLog.d(TAG, "removeResourceBackupObserver has no observers")
+        }
+    }
+
+    public fun init(cont: Context) {
+        setContext(cont)
+    }
+
+    fun setContext(cont: Context) {
+        mContext = cont
+    }
+
+    @SuppressLint("EnqueueWork")
+    fun watchfaceResourceRestoreProgress(cont: Context): Boolean {
+        var backupFolderPath = getBackupFolderPath(cont, mDeViceId)
+        var favoriteListWork = ArrayList<OneTimeWorkRequest>()
+        var allResourceWork = ArrayList<OneTimeWorkRequest>()
+        var source = File(backupFolderPath)
+
+        if (source.exists() && !source.listFiles().isNullOrEmpty()) {
+            if (mUUIDList.isNotEmpty()) {
+                mUUIDList.clear()
+            }
+            source.listFiles()?.let {
+                it.filter {
+                    it.name.endsWith(WatchFaceConstant.ZIP_EXTENSION)
+                            && it.name.startsWith(WfBnrConstants.WATCHFACE_RSC_STRING)
+                }
+                    .forEach {
+                        WFLog.w(TAG, "wfRestore Zip : ${it.name}")
+                        buildWorkRequest(
+                            cont,
+                            WfBnrConstants.RESULT_XML_WORK,
+                            "",
+                            it.nameWithoutExtension,
+                            -1,
+                            false
+                        )?.let { workRequest ->
+                            favoriteListWork.add(
+                                workRequest
+                            )
+                        }
+                    }
+                it.filter { it.isDirectory && WfBnrConstants.BNR_WORKER_MAP.containsKey(it.name) }
+                    .forEach { resDir ->
+                        WFLog.w(TAG, "wfRestore resDir : ${resDir.name}")
+                        resDir.listFiles()?.let {
+                            it.filter { it.isDirectory }
+                                .forEach {
+                                    try {
+                                        var fId = it.name.toInt()
+                                        buildWorkRequest(
+                                            cont,
+                                            WfBnrConstants.BNR_WORKER_MAP.get(resDir.name)!!,
+                                            resDir.name,
+                                            "",
+                                            fId,
+                                            false
+                                        )?.let { workRequest ->
+                                            allResourceWork.add(workRequest)
+                                        }
+                                    } catch (e: Exception) {
+                                        WFLog.e(
+                                            TAG,
+                                            "error during make restore Res ${resDir.name} / ${it.name}"
+                                        )
+                                    }
+                                }
+                        }
+                    }
+            }
+            startWorkManager(cont, false, allResourceWork, favoriteListWork)
+            return true
+        } else {
+            return false
+        }
+    }
+
+    @SuppressLint("EnqueueWork")
+    fun watchfaceResourceBackUpProgress(cont: Context): Boolean {
+        var favoriteList = WatchfaceDataMap.getFavoriteWatchfaceList(mDeViceId)
+        if (!favoriteList.isNullOrEmpty()) {
+            WFLog.w(TAG, "favoriteList = ${favoriteList.size}")
+            if (mUUIDList.isNotEmpty()) {
+                mUUIDList.clear()
+            }
+            var favoriteListWork = ArrayList<OneTimeWorkRequest>()
+            var allResourceWork = ArrayList<OneTimeWorkRequest>()
+            allResourceWork.add(
+                buildWorkRequest(
+                    cont,
+                    WfBnrConstants.CLEAN_UP,
+                    "",
+                    WfBnrConstants.CLEAN_UP,
+                    WatchFaceSharedConstant.NOT_EXIST,
+                    true
+                )!!
+            )
+            for (watchface in favoriteList) {
+                WFLog.d(TAG, "watchface = ${watchface.className}")
+                if ((!watchface.className.isNullOrEmpty()) && (WatchFaceConstant.DWF_CLASS_NAME == watchface.className)) {
+                    continue
+                }
+                watchface.packageName?.let { packageName ->
+                    watchface.className?.let { className ->
+                        watchface.favoriteId.let { favId ->
+                            if (WfBnrConstants.BNR_WORKER_MAP.containsKey(packageName)) {
+                                buildWorkRequest(
+                                    cont,
+                                    WfBnrConstants.BNR_WORKER_MAP.get(packageName)!!,
+                                    packageName,
+                                    className,
+                                    favId,
+                                    true
+                                )?.let {
+                                    WFLog.d(
+                                        TAG,
+                                        "watchface = allResourceWork added ${favoriteListWork.size}"
+                                    )
+                                    allResourceWork.add(it)
+                                }
+                            }
+                        }
+                        if (!mUUIDList.values.contains("${className}_${WfBnrConstants.RESULT_XML_WORK}_-1")) {
+                            buildWorkRequest(
+                                cont,
+                                WfBnrConstants.RESULT_XML_WORK,
+                                packageName,
+                                className,
+                                WatchFaceSharedConstant.NOT_EXIST,
+                                true
+                            )?.let {
+                                WFLog.d(
+                                    TAG,
+                                    "$packageName : favoriteListWork added ${favoriteListWork.size}"
+                                )
+                                favoriteListWork.add(it)
+                            }
+                        }
+                    }
+                }
+            }
+            startWorkManager(cont, true, allResourceWork, favoriteListWork)
+            return true
+        }
+        return false
+    }
+
+    fun startWorkManager(
+        cont: Context,
+        isBackupProcess: Boolean,
+        allResourceWork: ArrayList<OneTimeWorkRequest>,
+        favoriteListWork: ArrayList<OneTimeWorkRequest>
+    ) {
+        WFLog.d(TAG, "startWorkManager ")
+        WFLog.w(
+            TAG,
+            "watchface = favoriteListWork / allResourceWork ${favoriteListWork.size} / ${allResourceWork.size}"
+        )
+        if (favoriteListWork.size < 1) {
+            WFLog.w(TAG, "startWorkManager:: nothing to restore")
+            return
+        }
+        if ((workmgr != null) || (workInfo != null)) {
+            WFLog.d(TAG, "workmanafger is not null")
+            removeObserver()
+            workmgr = null
+            workInfo = null
         }
 
-        return ConnectionState.DISCONNECTED
+        workmgr = WorkManager.getInstance(cont)
+        workmgr?.let {
+            workInfo = it.getWorkInfosByTagLiveData(WfBnrConstants.WF_BNR_RESOURCE_TAG)
+            setResourceBnrObserver(
+                cont,
+                isBackupProcess,
+                favoriteListWork.size + allResourceWork.size
+            )
+            it.beginWith(if (isBackupProcess) allResourceWork else favoriteListWork)
+                .then(if (isBackupProcess) favoriteListWork else allResourceWork)
+                .enqueue()
+        }
+    }
+
+    fun setResourceBnrObserver(cont: Context, isBackupProcess: Boolean, listCount: Int) {
+        var buildCount = 0
+        workInfo?.let { workInfo ->
+            workInfo.observe(this, Observer {
+                WFLog.d(TAG, "ResourceBnr Observer observe ${it.size} $isBackupProcess")
+                it.forEach {
+                    if (mUUIDList.keys.contains(it.id) &&
+                        (it.state.equals(WorkInfo.State.SUCCEEDED) || it.state.equals(WorkInfo.State.FAILED))
+                    ) {
+                        WFLog.d(
+                            TAG,
+                            "ResourceBnr Observer $buildCount workinfo ${it.state} ${it.tags} ${it.id}"
+                        )
+                        mUUIDList.remove(it.id)
+                        ++buildCount
+                        WFLog.d(
+                            TAG,
+                            "ResourceBnr $buildCount ${
+                                WfBnrConstants.OUTPUT_MAP.get(
+                                    it.outputData.keyValueMap.get("reason")
+                                )
+                            }"
+                        )
+                    }
+                    if (listCount == buildCount) {
+                        bnrIntentHash.let { hash ->
+                            hash.keys.forEach() { key ->
+                                when (key) {
+                                    WfBnrConstants.WATCHFACE_BACKUP_REQ -> {
+                                        backup(
+                                            cont,
+                                            hash.get(key)!!,
+                                            WfBnrConstants.WATCHFACE_BACKUP_RES,
+                                            getResourceBackupFolderPath(cont),
+                                        )
+                                    }
+                                    WfBnrConstants.WATCHFACE_RESTORE_REQ -> {
+                                        if (WatchFaceUtil.compressWfBnrResource(
+                                                cont,
+                                                WatchFaceSharedUtil.getDeviceID(cont)
+                                            )
+                                        ) {
+                                            WRCompanionServiceInterface.restoreWatchfaceResource(
+                                                mDeViceId
+                                            )
+                                        } else {
+                                            WFLog.e(TAG, "setFavoriteObserver zipping Failed")
+                                        }
+                                    }
+                                }
+                                hash.remove(key)
+                            }
+                        }
+                        removeObserver()
+                    }
+                }
+            })
+        } ?: run {
+            WFLog.d(TAG, "setFavoriteObserver workinfo is null")
+        }
+    }
+
+    private fun buildWorkRequest(
+        cont: Context,
+        workerName: String,
+        packageName: String,
+        className: String,
+        id: Int,
+        isBackupProcess: Boolean
+    ): OneTimeWorkRequest? {
+        var bWorker: Class<out ListenableWorker>? = null
+        var path = WatchFaceSharedUtil.getWatchfaceFolderPath(cont)
+        WFLog.d(TAG, "buildWorkRequest path : $workerName : ${if(id == -1){className}else{packageName}}")
+        var data: Data = Data.Builder()
+            .putString(WatchFaceConstant.WF_RESOURCE_PACKAGE_NAME, packageName)
+            .putString(WatchFaceConstant.WF_RESOURCE_CLASS_NAME, className)
+            .putInt(WatchFaceConstant.WF_RESOURCE_FAVORITE_ID, id)
+            .putString(WfBnrConstants.GM_FOLDER_PATH, path)
+            .putBoolean(WfBnrConstants.BACKUP_STATUS, isBackupProcess)
+            .build()
+
+        when (workerName) {
+            WfBnrConstants.RESULT_XML_WORK -> bWorker =
+                WfBnrListZipWorker::class.java
+            WfBnrConstants.MYPHOTO_WORK -> bWorker =
+                WfBnrMyPhotoWorker::class.java
+            WfBnrConstants.MYPEBBL_WORK -> bWorker =
+                WfBnrMyPebbleWork::class.java
+            WfBnrConstants.AREMOJI_WORK -> bWorker =
+                WfBnrAremojiWork::class.java
+            WfBnrConstants.PHOTOSTICKER_WORK -> bWorker =
+                WfBnrPhotoStickerWorker::class.java
+            WfBnrConstants.CLEAN_UP -> bWorker = WfBnrCleanWorker::class.java
+            else -> {}
+        }
+        var build = if (bWorker == null) null
+        else OneTimeWorkRequest.Builder(bWorker)
+            .setInputData(data)
+            .addTag(WfBnrConstants.WF_BNR_RESOURCE_TAG)
+            .addTag(id.toString())
+            .addTag(packageName)
+            .addTag(className)
+            .addTag(isBackupProcess.toString())
+            .build()
+
+        build?.let {
+            if (!mUUIDList.keys.contains(it.id)) {
+                mUUIDList.put(it.id, "${className}_${workerName}_${id}")
+            } else {
+                WFLog.e(TAG, "Failed To get build from ${className}_${workerName}_${id}")
+                return null
+            }
+        }
+        return build
+    }
+
+    fun sendBroadCast(cont: Context, intent: Intent) {
+        WFLog.d(TAG, "sendBroadCast")
     }
 
     private fun backup(
         context: Context,
         intent: Intent,
         response: String,
-        sourceFile: File?,
-        deviceId: String?
+        sourceFile: File?
     ) {
         val source = intent.getStringExtra(WfBnrConstants.EXTRA_SOURCE)
         val sessionTime = intent.getStringExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME)
@@ -183,12 +476,11 @@ class WfSmartSwitchBnrReceiver : BroadcastReceiver() {
                     val fileShareHelper = FileShareHelper(context, TAG)
                     fileShareHelper.copy(file, intent)
                     result = WfBnrConstants.RESULT_SUCCESS
-                    writeLog(context, deviceId, true)
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
             } else {
-                WFLog.w(TAG, "backup - file doesn't exist")
+                WFLog.e(TAG, "backup - file doesn't exist")
             }
         }
         sendResultResponse(context, response, result, source, sessionTime)
@@ -212,6 +504,7 @@ class WfSmartSwitchBnrReceiver : BroadcastReceiver() {
                 e.printStackTrace()
             }
         }
+
         sendResultResponse(context, response, result, source, sessionTime)
         return result
     }
@@ -234,27 +527,32 @@ class WfSmartSwitchBnrReceiver : BroadcastReceiver() {
         intent.putExtra(WfBnrConstants.EXTRA_SOURCE, source)
         intent.putExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME, sessionTime)
         context.sendBroadcast(intent, WfBnrConstants.SS_WEAR_PROVIDER_PERMISSION)
+
     }
 
-    private fun writeLog(context: Context, deviceId: String?, isBackUp : Boolean){
-        val status = if(isBackUp)"BackUp" else "Restore"
-        WatchFaceUtil.convertDataSyncList(context, deviceId)?.let{ wfListHash ->
-            if(wfListHash.isNotEmpty()){
-                WFLog.w(TAG, "wf$status:List: favoriteList File Exist")
-                for (key in wfListHash.keys) {
-                    WFLog.w(TAG, "wf$status: className : $key")
-                    wfListHash[key]?.let { values ->
-                        WFLog.w(TAG, "wf$status: favoriteIds : $values")
-                    }
-                }
-            } else {
-                WFLog.w(TAG, "wf$status: no List in favoriteList file")
-            }
-        }
+    fun getResourceBackupFolderPath(context: Context?): File? {
+        val filesDirectory =
+            context?.let { FileEncryptionUtils.getEncryptionContext(it)?.filesDir }
+        return File(StringBuilder().apply {
+            append(
+                filesDirectory
+            ).append(File.separator)
+            append(mDeViceId).append(File.separator)
+            append(WatchFaceSharedConstant.WATCHFACE_RESOURCE_FOLDER_NAME).append(File.separator)
+            append(WatchFaceSharedConstant.WF_BACKUP_FOLDER_NAME)
+        }.toString())
     }
 
     companion object {
-        const val TAG = "WfSmartSwitchBnrReceiver"
+        const val TAG = "WatchfaceBackupManager"
+
+        @SuppressLint("StaticFieldLeak")
+        private var INSTANCE: WatchfaceBnRManager? = null
+        fun getInstance(cont: Context): WatchfaceBnRManager =
+            INSTANCE ?: synchronized(this) {
+                INSTANCE ?: WatchfaceBnRManager(cont).also {
+                    INSTANCE = it
+                }
+            }
     }
 }
-
