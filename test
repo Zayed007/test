@@ -1,558 +1,272 @@
-package com.samsung.android.companionservice.watchface.bnr
+package com.samsung.android.companionservice.watchface.characterwatchface.bitmoji.manager
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.content.Intent
-import androidx.lifecycle.*
-import androidx.lifecycle.Observer
-import androidx.work.*
-import com.google.android.libraries.wear.companion.watch.ConnectionState
-import com.samsung.android.app.watchmanager.plugin.libfactory.util.FileEncryptionUtils
-import com.samsung.android.companionservice.connection.sdkwrapper.ConnectionWrapper
+import android.text.TextUtils
+import com.samsung.android.companionservice.aidl.watchface.characterwatchface.bitmoji.BitmojiAppStatus
 import com.samsung.android.companionservice.constant.WatchFaceConstant
-import com.samsung.android.companionservice.linker.ConnectionCompanionLinker
-import com.samsung.android.companionservice.service.WRCompanionServiceInterface
-import com.samsung.android.companionservice.watchface.manager.WatchfaceDataMap
+import com.samsung.android.companionservice.watchface.characterwatchface.EmojiWatchFaceManagerBase
+import com.samsung.android.companionservice.watchface.characterwatchface.bitmoji.model.BitmojiSticker
+import com.samsung.android.companionservice.watchface.characterwatchface.bitmoji.util.BitmojiStickerCallBack
+import com.samsung.android.companionservice.watchface.characterwatchface.bitmoji.util.BitmojiUtil
+import com.samsung.android.companionservice.watchface.characterwatchface.constants.CharacterWatchFaceConstant
 import com.samsung.android.companionservice.watchface.util.WFLog
 import com.samsung.android.companionservice.watchface.util.WatchFaceUtil
-import com.samsung.android.companionservice.watchface.util.WatchFaceUtil.getBackupFolderPath
+import com.samsung.android.companionservice.watchface.util.WatchfacePreference
+import com.samsung.android.plugin.sharedlib.utils.SharedFileUtils
 import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedConstant
 import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil
-import com.samsung.android.smartswitchfileshare.FileShareHelper
-import kotlinx.coroutines.launch
 import java.io.File
-import java.util.*
 
-public class WatchfaceBnRManager(cont: Context) : WfBnrLifeCycleService(), LifecycleOwner {
+class BitEmojiWatchFaceManager : EmojiWatchFaceManagerBase() {
 
-    private val mServiceLifecycleDispatcher = ServiceLifecycleDispatcher(this)
-    private var mContext: Context? = cont
-    private var mDeViceId: String? = ""
-    private var workmgr: WorkManager? = null
-    private var workInfo: LiveData<MutableList<WorkInfo>>? = null
-    private var bnrIntentHash: HashMap<String, Intent> = HashMap()
-    private var mUUIDList: HashMap<UUID, String> = HashMap()
-
-    override val lifecycle: Lifecycle
-        get() = mServiceLifecycleDispatcher.lifecycle
-
-    override fun onCreate() {
-        mServiceLifecycleDispatcher.onServicePreSuperOnCreate()
-        super.onCreate()
-    }
-
-    override fun onStart(intent: Intent?, startId: Int) {
-        mServiceLifecycleDispatcher.onServicePreSuperOnStart()
-        super.onStart(intent, startId)
-    }
-
-    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
-        mServiceLifecycleDispatcher.onServicePreSuperOnStart()
-        lifecycleScope.launch {}
-        WFLog.d(TAG, "onStartCommand Service Started")
-
-        intent.action?.let { action ->
-            bnrIntentHash.let {
-                if (!it.containsKey(action)) {
-                    it.put(action, intent)
-                    when (action) {
-                        WfBnrConstants.WATCHFACE_BACKUP_REQ -> {
-                            WFLog.d(TAG, "onStartCommand watchfaceResourceBackup start")
-                            val nodeId = intent.getStringExtra(WfBnrConstants.EXTRA_WATCH_DEVICE_ID)
-                            mDeViceId =
-                                nodeId?.let { ConnectionCompanionLinker.getBTAddressFromNodeId(it) }
-                            if (mDeViceId.isNullOrEmpty()) {
-                                WFLog.d(TAG, "deviceID is not exist ")
-                                backup(
-                                    mContext!!, intent,
-                                    WfBnrConstants.WATCHFACE_BACKUP_RES,
-                                    null
-                                )
-                            } else {
-                                if (watchfaceResourceBackUpProgress(mContext!!)) {
-                                    WFLog.d(TAG, "onStartCommand watchfaceResourceBackup is true")
-                                }
-                            }
-                        }
-                        WfBnrConstants.WATCHFACE_RESTORE_REQ -> {
-                            mDeViceId = WatchFaceSharedUtil.getDeviceID(mContext)
-                            if (getWatchConnectionState(mContext!!) == ConnectionState.BLUETOOTH) {
-
-                                getBackupFolderPath(mContext!!, mDeViceId!!).removeSuffix("/").let {
-                                    WFLog.d(TAG, "backupFolder : $it")
-                                    if (WatchFaceSharedUtil.isFileExist(it)) {
-                                        WatchFaceSharedUtil.deleteDir(it)
-                                    }
-                                }
-                            }
-                            if (restore(
-                                    mContext!!,
-                                    intent,
-                                    WfBnrConstants.WATCHFACE_RESTORE_RES,
-                                    File(WatchFaceSharedUtil.getWatchfaceFolderPath(mContext!!))
-                                ) == WfBnrConstants.RESULT_SUCCESS
-                            ) {
-                                if (watchfaceResourceRestoreProgress(mContext!!)) {
-                                    WFLog.d(
-                                        TAG,
-                                        "onStartCommand Resource restore Succeed  $mDeViceId"
-                                    )
-                                } else {
-                                    WFLog.e(
-                                        TAG,
-                                        "onStartCommand Resource restore Failed during copy to resource Folder"
-                                    )
-                                }
-                            } else {
-                                WFLog.e(
-                                    TAG,
-                                    "onStartCommand Resource restore Failed at FileSharing"
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return super.onStartCommand(intent, flags, startId)
-    }
-
-    private fun getWatchConnectionState(context: Context): ConnectionState {
-        WFLog.d(TAG, "getWatchConnectionState $mDeViceId")
-        ConnectionWrapper.getConnectionState(mDeViceId)?.let {
-            return it
-        } ?: run {
-            return ConnectionState.DISCONNECTED
+    companion object{
+        val TAG = "BitEmojiWatchFaceManager"
+        @kotlin.jvm.JvmStatic
+        val instance: BitEmojiWatchFaceManager = create()
+        private var bitmojiStickerManager: BitmojiStickerManager? = null
+        fun create() : BitEmojiWatchFaceManager = BitEmojiWatchFaceManager()
+        fun getInstance(): EmojiWatchFaceManagerBase {
+            return instance
         }
     }
 
-    override fun onDestroy() {
-        WFLog.d(TAG, "onDestroy")
-        removeObserver()
-        bnrIntentHash.let { it.clear() }
-        mServiceLifecycleDispatcher.onServicePreSuperOnDestroy()
-        super.onDestroy()
+    override fun init(context: Context, deviceId: String) {
+        super.init(context, deviceId)
+        setDefault(context, deviceId)
+        readStickerFromServer()
+        updateCharacterWatchFaceData()
     }
 
-    fun removeObserver() {
-        WFLog.d(TAG, "removeObserver")
-        workmgr?.let {
-            WFLog.d(TAG, "remove certain observers")
-            it.cancelAllWorkByTag(WfBnrConstants.WF_BNR_RESOURCE_TAG)
-            it.cancelAllWork()
-            it.pruneWork()
-        }
-        removeResourceBnrObserver()
-    }
-
-    fun removeResourceBnrObserver() {
-        if (workInfo!!.hasActiveObservers() || workInfo!!.hasObservers()) {
-            WFLog.d(TAG, "removeResourceBackupObserver has observers")
-            workInfo?.removeObservers(this)
-        } else {
-            WFLog.d(TAG, "removeResourceBackupObserver has no observers")
-        }
-    }
-
-    public fun init(cont: Context) {
-        setContext(cont)
-    }
-
-    fun setContext(cont: Context) {
-        mContext = cont
-    }
-
-    @SuppressLint("EnqueueWork")
-    fun watchfaceResourceRestoreProgress(cont: Context): Boolean {
-        var backupFolderPath = getBackupFolderPath(cont, mDeViceId)
-        var favoriteListWork = ArrayList<OneTimeWorkRequest>()
-        var allResourceWork = ArrayList<OneTimeWorkRequest>()
-        var source = File(backupFolderPath)
-
-        if (source.exists() && !source.listFiles().isNullOrEmpty()) {
-            if (mUUIDList.isNotEmpty()) {
-                mUUIDList.clear()
-            }
-            source.listFiles()?.let {
-                it.filter {
-                    it.name.endsWith(WatchFaceConstant.ZIP_EXTENSION)
-                            && it.name.startsWith(WfBnrConstants.WATCHFACE_RSC_STRING)
-                }
-                    .forEach {
-                        WFLog.w(TAG, "wfRestore Zip : ${it.name}")
-                        buildWorkRequest(
-                            cont,
-                            WfBnrConstants.RESULT_XML_WORK,
-                            "",
-                            it.nameWithoutExtension,
-                            -1,
-                            false
-                        )?.let { workRequest ->
-                            favoriteListWork.add(
-                                workRequest
-                            )
-                        }
-                    }
-                it.filter { it.isDirectory && WfBnrConstants.BNR_WORKER_MAP.containsKey(it.name) }
-                    .forEach { resDir ->
-                        WFLog.w(TAG, "wfRestore resDir : ${resDir.name}")
-                        resDir.listFiles()?.let {
-                            it.filter { it.isDirectory }
-                                .forEach {
-                                    try {
-                                        var fId = it.name.toInt()
-                                        buildWorkRequest(
-                                            cont,
-                                            WfBnrConstants.BNR_WORKER_MAP.get(resDir.name)!!,
-                                            resDir.name,
-                                            "",
-                                            fId,
-                                            false
-                                        )?.let { workRequest ->
-                                            allResourceWork.add(workRequest)
-                                        }
-                                    } catch (e: Exception) {
-                                        WFLog.e(
-                                            TAG,
-                                            "error during make restore Res ${resDir.name} / ${it.name}"
-                                        )
-                                    }
-                                }
-                        }
-                    }
-            }
-            startWorkManager(cont, false, allResourceWork, favoriteListWork)
-            return true
-        } else {
-            return false
-        }
-    }
-
-    @SuppressLint("EnqueueWork")
-    fun watchfaceResourceBackUpProgress(cont: Context): Boolean {
-        var favoriteList = WatchfaceDataMap.getFavoriteWatchfaceList(mDeViceId)
-        if (!favoriteList.isNullOrEmpty()) {
-            WFLog.w(TAG, "favoriteList = ${favoriteList.size}")
-            if (mUUIDList.isNotEmpty()) {
-                mUUIDList.clear()
-            }
-            var favoriteListWork = ArrayList<OneTimeWorkRequest>()
-            var allResourceWork = ArrayList<OneTimeWorkRequest>()
-            allResourceWork.add(
-                buildWorkRequest(
-                    cont,
-                    WfBnrConstants.CLEAN_UP,
-                    "",
-                    WfBnrConstants.CLEAN_UP,
-                    WatchFaceSharedConstant.NOT_EXIST,
+    fun setDefault(cont: Context, deviceId: String){
+        WFLog.d(TAG, "setDefault")
+        var favId = WatchFaceUtil.getDefaultFavoriteId(
+            WatchFaceSharedConstant.BITMOJI_WATCHFACE_PACKAGE_NAME,
+            WatchFaceSharedConstant.BITMOJI_WATCHFACE_CLASS_NAME,
+            deviceId
+        )
+        var path = WatchFaceSharedUtil.getBitmojiFolderPath(cont, favId) + WatchFaceSharedConstant.BITMOJI_PREVIEW + WatchFaceSharedConstant.PNG_EXTENSION
+        WFLog.d(TAG, "setDefault path = $path")
+        if(!SharedFileUtils.isFileExit(path)){
+            mContext?.let{
+                WatchfacePreference.setBooleanSharedPref(
+                    mContext,
+                    WatchFaceSharedConstant.BITMOJI_PREF_DATA + deviceId,
+                    WatchFaceSharedConstant.BITMOJI_KEY_DATA_UPDATED + WatchFaceSharedConstant.ID + favId,
                     true
-                )!!
+                )
+            }
+        }
+    }
+
+    override fun getBitmojiAppStatus(): BitmojiAppStatus {
+        mContext?.let { return BitmojiUtil.getBitmojiAppStatus(it) }
+        return BitmojiAppStatus.UNKNOWN
+    }
+
+    override fun getBitmojiUpdateStatus(cont: Context?): Boolean {
+        if (TextUtils.isEmpty(deviceId)) {
+            deviceId = WatchFaceSharedUtil.getDeviceID(cont)
+        }
+        return WatchfacePreference.getBooleanSharedPref(
+            cont,
+            WatchFaceSharedConstant.BITMOJI_PREF_DATA + deviceId,
+            WatchFaceSharedConstant.BITMOJI_KEY_DATA_UPDATED
+                    + WatchFaceSharedConstant.ID + WatchFaceUtil.getDefaultFavoriteId(
+                WatchFaceSharedConstant.BITMOJI_WATCHFACE_PACKAGE_NAME,
+                WatchFaceSharedConstant.BITMOJI_WATCHFACE_CLASS_NAME,
+                deviceId
+            ),
+            false
+        )
+    }
+
+    override fun setAvatarSynced(
+        context: Context,
+        favoriteId: Int,
+        stickerId: String?,
+        status: Boolean
+    ) {
+        if (mContext == null) {
+            mContext = context
+        }
+        var deviceId = WatchFaceSharedUtil.getDeviceID(context)
+        var favId = favoriteId
+        if (favId == -1) {
+            favId = WatchFaceUtil.getDefaultFavoriteId(
+                WatchFaceSharedConstant.BITMOJI_WATCHFACE_PACKAGE_NAME,
+                WatchFaceSharedConstant.BITMOJI_WATCHFACE_CLASS_NAME,
+                deviceId
             )
-            for (watchface in favoriteList) {
-                WFLog.d(TAG, "watchface = ${watchface.className}")
-                if ((!watchface.className.isNullOrEmpty()) && (WatchFaceConstant.DWF_CLASS_NAME == watchface.className)) {
-                    continue
-                }
-                watchface.packageName?.let { packageName ->
-                    watchface.className?.let { className ->
-                        watchface.favoriteId.let { favId ->
-                            if (WfBnrConstants.BNR_WORKER_MAP.containsKey(packageName)) {
-                                buildWorkRequest(
-                                    cont,
-                                    WfBnrConstants.BNR_WORKER_MAP.get(packageName)!!,
-                                    packageName,
-                                    className,
-                                    favId,
-                                    true
-                                )?.let {
-                                    WFLog.d(
-                                        TAG,
-                                        "watchface = allResourceWork added ${favoriteListWork.size}"
-                                    )
-                                    allResourceWork.add(it)
-                                }
-                            }
-                        }
-                        if (!mUUIDList.values.contains("${className}_${WfBnrConstants.RESULT_XML_WORK}_-1")) {
-                            buildWorkRequest(
-                                cont,
-                                WfBnrConstants.RESULT_XML_WORK,
-                                packageName,
-                                className,
-                                WatchFaceSharedConstant.NOT_EXIST,
-                                true
-                            )?.let {
-                                WFLog.d(
-                                    TAG,
-                                    "$packageName : favoriteListWork added ${favoriteListWork.size}"
-                                )
-                                favoriteListWork.add(it)
-                            }
-                        }
-                    }
+        }
+        mContext?.let{
+            WatchfacePreference.setBooleanSharedPref(
+                mContext,
+                WatchFaceSharedConstant.BITMOJI_PREF_DATA + deviceId,
+                WatchFaceSharedConstant.BITMOJI_KEY_DATA_UPDATED + WatchFaceSharedConstant.ID + favId,
+                status
+            )
+        }
+    }
+
+    override fun readStickerFromServer() {
+        WFLog.i(
+            TAG,
+            "bitmoji check permission :${mContext?.let { BitmojiUtil.isBitmojiSupported(it) }}"
+        )
+        if (BitmojiUtil.isBitmojiSupported(mContext!!)) {
+            if (bitmojiStickerManager == null) {
+                bitmojiStickerManager = BitmojiStickerManager(mContext, bitmojiStickerCallBack)
+            }
+
+            //     bitmojiStickerManager!!.readStickerFromServer()
+        }
+    }
+
+    fun readEmojiWithStickerId(StickerId: String) {
+        WFLog.w(TAG, "readEmojiWithStickerId()")
+        if (setStickerManager()) {
+            bitmojiStickerManager?.readEmojiWithStickerId(StickerId)
+        }
+    }
+
+    override fun updateCharacterWatchFaceData() {
+        WFLog.w(TAG, "updateCharacterWatchFaceData()")
+        if (setStickerManager()) {
+            bitmojiStickerManager?.updateStaticBitmoji()
+        }
+    }
+
+    fun setStickerManager(): Boolean {
+        if(bitmojiStickerManager!=null){return true}
+        mContext?.let {
+            val isSupport = BitmojiUtil.isBitmojiSupported(it)
+            WFLog.i(TAG, "isSupport BitEmoji?  :$isSupport}")
+            if (isSupport) {
+                bitmojiStickerManager = BitmojiStickerManager(it, bitmojiStickerCallBack)
+                bitmojiStickerManager?.let {
+                    return true
+                }?.run {
+                    WFLog.e(TAG, "setStickerManager Fail to get StickerManager")
+                    return false
                 }
             }
-            startWorkManager(cont, true, allResourceWork, favoriteListWork)
-            return true
         }
         return false
     }
 
-    fun startWorkManager(
-        cont: Context,
-        isBackupProcess: Boolean,
-        allResourceWork: ArrayList<OneTimeWorkRequest>,
-        favoriteListWork: ArrayList<OneTimeWorkRequest>
-    ) {
-        WFLog.d(TAG, "startWorkManager ")
-        WFLog.w(
-            TAG,
-            "watchface = favoriteListWork / allResourceWork ${favoriteListWork.size} / ${allResourceWork.size}"
-        )
-        if (favoriteListWork.size < 1) {
-            WFLog.w(TAG, "startWorkManager:: nothing to restore")
-            return
-        }
-        if ((workmgr != null) || (workInfo != null)) {
-            WFLog.d(TAG, "workmanafger is not null")
-            removeObserver()
-            workmgr = null
-            workInfo = null
+    var bitmojiStickerCallBack: BitmojiStickerCallBack = object : BitmojiStickerCallBack {
+        override fun onLoadedFromServer(stickerPacks: BitmojiSticker?) {
+            WFLog.i(TAG, "onLoadedFromServer")
+            //bitmojiStickerManager?.let {
+            //    it.createBitmojiFile(
+            //        stickerPacks?.mImageUris,
+            //        StickerWatchFacesConstant.BITMOJI_TYPE_STATIC
+            //    )
+            //}?: run {
+            //    WFLog.i(TAG, "bitmojiStickerManager is null")
+            //}
         }
 
-        workmgr = WorkManager.getInstance(cont)
-        workmgr?.let {
-            workInfo = it.getWorkInfosByTagLiveData(WfBnrConstants.WF_BNR_RESOURCE_TAG)
-            setResourceBnrObserver(
-                cont,
-                isBackupProcess,
-                favoriteListWork.size + allResourceWork.size
-            )
-            it.beginWith(if (isBackupProcess) allResourceWork else favoriteListWork)
-                .then(if (isBackupProcess) favoriteListWork else allResourceWork)
-                .enqueue()
-        }
-    }
-
-    fun setResourceBnrObserver(cont: Context, isBackupProcess: Boolean, listCount: Int) {
-        var buildCount = 0
-        workInfo?.let { workInfo ->
-            workInfo.observe(this, Observer {
-                WFLog.d(TAG, "ResourceBnr Observer observe ${it.size} $isBackupProcess")
-                it.forEach {
-                    if (mUUIDList.keys.contains(it.id) &&
-                        (it.state.equals(WorkInfo.State.SUCCEEDED) || it.state.equals(WorkInfo.State.FAILED))
-                    ) {
-                        WFLog.d(
-                            TAG,
-                            "ResourceBnr Observer $buildCount workinfo ${it.state} ${it.tags} ${it.id}"
-                        )
-                        mUUIDList.remove(it.id)
-                        ++buildCount
-                        WFLog.d(
-                            TAG,
-                            "ResourceBnr $buildCount ${
-                                WfBnrConstants.OUTPUT_MAP.get(
-                                    it.outputData.keyValueMap.get("reason")
-                                )
-                            }"
-                        )
-                    }
-                    if (listCount == buildCount) {
-                        bnrIntentHash.let { hash ->
-                            hash.keys.forEach() { key ->
-                                when (key) {
-                                    WfBnrConstants.WATCHFACE_BACKUP_REQ -> {
-                                        backup(
-                                            cont,
-                                            hash.get(key)!!,
-                                            WfBnrConstants.WATCHFACE_BACKUP_RES,
-                                            getResourceBackupFolderPath(cont),
-                                        )
-                                    }
-                                    WfBnrConstants.WATCHFACE_RESTORE_REQ -> {
-                                        if (WatchFaceUtil.compressWfBnrResource(
-                                                cont,
-                                                WatchFaceSharedUtil.getDeviceID(cont)
-                                            )
-                                        ) {
-                                            WRCompanionServiceInterface.restoreWatchfaceResource(
-                                                mDeViceId
-                                            )
-                                        } else {
-                                            WFLog.e(TAG, "setFavoriteObserver zipping Failed")
-                                        }
-                                    }
-                                }
-                                hash.remove(key)
-                            }
-                        }
-                        removeObserver()
-                    }
-                }
-            })
-        } ?: run {
-            WFLog.d(TAG, "setFavoriteObserver workinfo is null")
-        }
-    }
-
-    private fun buildWorkRequest(
-        cont: Context,
-        workerName: String,
-        packageName: String,
-        className: String,
-        id: Int,
-        isBackupProcess: Boolean
-    ): OneTimeWorkRequest? {
-        var bWorker: Class<out ListenableWorker>? = null
-        var path = WatchFaceSharedUtil.getWatchfaceFolderPath(cont)
-        WFLog.d(TAG, "buildWorkRequest path : $workerName : ${if(id == -1){className}else{packageName}}")
-        var data: Data = Data.Builder()
-            .putString(WatchFaceConstant.WF_RESOURCE_PACKAGE_NAME, packageName)
-            .putString(WatchFaceConstant.WF_RESOURCE_CLASS_NAME, className)
-            .putInt(WatchFaceConstant.WF_RESOURCE_FAVORITE_ID, id)
-            .putString(WfBnrConstants.GM_FOLDER_PATH, path)
-            .putBoolean(WfBnrConstants.BACKUP_STATUS, isBackupProcess)
-            .build()
-
-        when (workerName) {
-            WfBnrConstants.RESULT_XML_WORK -> bWorker =
-                WfBnrListZipWorker::class.java
-            WfBnrConstants.MYPHOTO_WORK -> bWorker =
-                WfBnrMyPhotoWorker::class.java
-            WfBnrConstants.MYPEBBL_WORK -> bWorker =
-                WfBnrMyPebbleWork::class.java
-            WfBnrConstants.AREMOJI_WORK -> bWorker =
-                WfBnrAremojiWork::class.java
-            WfBnrConstants.PHOTOSTICKER_WORK -> bWorker =
-                WfBnrPhotoStickerWorker::class.java
-            WfBnrConstants.CLEAN_UP -> bWorker = WfBnrCleanWorker::class.java
-            else -> {}
-        }
-        var build = if (bWorker == null) null
-        else OneTimeWorkRequest.Builder(bWorker)
-            .setInputData(data)
-            .addTag(WfBnrConstants.WF_BNR_RESOURCE_TAG)
-            .addTag(id.toString())
-            .addTag(packageName)
-            .addTag(className)
-            .addTag(isBackupProcess.toString())
-            .build()
-
-        build?.let {
-            if (!mUUIDList.keys.contains(it.id)) {
-                mUUIDList.put(it.id, "${className}_${workerName}_${id}")
+        override fun onCreatedFile(result: Int) {
+            WFLog.i(TAG, "onCreatedFile" + result)
+            if (bitmojiStickerManager != null) {
+                WFLog.i(TAG, "bitmojiStickerManager is not null")
+            }
+            if (result == CharacterWatchFaceConstant.SUCCESS && bitmojiStickerManager != null) {
+                WFLog.i(TAG, "onCreatedFile")
+                bitmojiStickerManager?.getContentsFromCache()
             } else {
-                WFLog.e(TAG, "Failed To get build from ${className}_${workerName}_${id}")
-                return null
+                WFLog.e(
+                    TAG,
+                    "onCreatedFile is fail (bitmojiStickerManager : $bitmojiStickerManager"
+                )
             }
         }
-        return build
-    }
 
-    fun sendBroadCast(cont: Context, intent: Intent) {
-        WFLog.d(TAG, "sendBroadCast")
-    }
-
-    private fun backup(
-        context: Context,
-        intent: Intent,
-        response: String,
-        sourceFile: File?
-    ) {
-        val source = intent.getStringExtra(WfBnrConstants.EXTRA_SOURCE)
-        val sessionTime = intent.getStringExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME)
-        val extraAction =
-            intent.getIntExtra(WfBnrConstants.EXTRA_ACTION, WfBnrConstants.ACTION_BACKUP_RESTORE)
-        var result = WfBnrConstants.RESULT_FAIL
-
-        if (extraAction == WfBnrConstants.ACTION_BACKUP_CANCEL) {
-            WFLog.e(TAG, "backup - action value cancel")
-            return
-        }
-        sourceFile?.let { file ->
-            if (file.exists()) {
-                try {
-                    val fileShareHelper = FileShareHelper(context, TAG)
-                    fileShareHelper.copy(file, intent)
-                    result = WfBnrConstants.RESULT_SUCCESS
-                } catch (e: Exception) {
-                    e.printStackTrace()
+        override fun onTransformedFileList(stickerImgPacks: Array<File>?) {
+            if (stickerImgPacks != null && stickerImgPacks.size > 0) {
+                WFLog.i(TAG, "onTransformedFileUri > Size : " + stickerImgPacks.size)
+                if(WatchFaceUtil.compressBitMojiResource(mContext, stickerImgPacks)){
+                    WFLog.d(TAG, "saveBitmojiImagePack() Success")
+                    mCharacterWatchFaceListener.onBitEmojiCharacterSaveDone(WatchFaceConstant.RESULT_SUCCES)
+                } else {
+                    WFLog.e(TAG, "saveBitmojiImagePack() Failed")
+                        mCharacterWatchFaceListener.onBitEmojiCharacterSaveDone(WatchFaceConstant.RESULT_FAIL)
                 }
             } else {
-                WFLog.e(TAG, "backup - file doesn't exist")
-            }
-        }
-        sendResultResponse(context, response, result, source, sessionTime)
-    }
-
-    private fun restore(
-        context: Context,
-        intent: Intent,
-        response: String,
-        dstFile: File?
-    ): Int {
-        val source = intent.getStringExtra(WfBnrConstants.EXTRA_SOURCE)
-        val sessionTime = intent.getStringExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME)
-        var result = WfBnrConstants.RESULT_FAIL
-        dstFile?.let {
-            try {
-                val fileShareHelper = FileShareHelper(context, TAG)
-                fileShareHelper.copy(intent, it)
-                result = WfBnrConstants.RESULT_SUCCESS
-            } catch (e: Exception) {
-                e.printStackTrace()
+                WFLog.e(TAG, "stickerImgPacks != null && stickerImgPacks.size > 0 is false")
             }
         }
 
-        sendResultResponse(context, response, result, source, sessionTime)
-        return result
+        override fun onProgressUpdate(progress: Int) {
+            WFLog.i(TAG, "onProgressUpdate ")
+        }
+
+        override fun onBitEmojiCharacterUpdated() {
+            WFLog.i(TAG, "onBitEmojiCharacterUpdated")
+            setAvatarSynced(mContext, -1,  "",true)
+            mCharacterWatchFaceListener.onBitEmojiCharacterUpdated()
+        }
+    }
+}
+
+public class EmojiWatchFaceManagerBase {
+    protected Context mContext;
+    protected String deviceId;
+    protected CharacterWatchFaceListener mCharacterWatchFaceListener;
+
+    protected void init(Context context, String device) {
+        if (mContext == null) {
+            mContext = context;
+        }
+        deviceId = device;
+    }
+    public boolean isContextNotExist(){
+        return (mContext == null);
     }
 
-    private fun sendResultResponse(
-        context: Context,
-        msg: String,
-        errorCode: Int,
-        source: String?,
-        sessionTime: String?
-    ) {
-        val intent = Intent(msg)
-        WFLog.d(TAG, "sendResultResponse $msg $source")
-        intent.putExtra(
-            WfBnrConstants.RESULT,
-            if (errorCode == WfBnrConstants.RESULT_SUCCESS) WfBnrConstants.RESULT_SUCCESS else WfBnrConstants.RESULT_FAIL
-        )
-        intent.putExtra(WfBnrConstants.EXTRA_ERR_CODE, errorCode)
-        intent.putExtra(WfBnrConstants.EXTRA_REQ_SIZE, 0)
-        intent.putExtra(WfBnrConstants.EXTRA_SOURCE, source)
-        intent.putExtra(WfBnrConstants.EXTRA_EXPORT_SESSION_TIME, sessionTime)
-        context.sendBroadcast(intent, WfBnrConstants.SS_WEAR_PROVIDER_PERMISSION)
-
+    public void setContext(Context context){
+        mContext = context;
     }
 
-    fun getResourceBackupFolderPath(context: Context?): File? {
-        val filesDirectory =
-            context?.let { FileEncryptionUtils.getEncryptionContext(it)?.filesDir }
-        return File(StringBuilder().apply {
-            append(
-                filesDirectory
-            ).append(File.separator)
-            append(mDeViceId).append(File.separator)
-            append(WatchFaceSharedConstant.WATCHFACE_RESOURCE_FOLDER_NAME).append(File.separator)
-            append(WatchFaceSharedConstant.WF_BACKUP_FOLDER_NAME)
-        }.toString())
+    protected void setCharacterUIListener(CharacterWatchFaceListener listener){
+        mCharacterWatchFaceListener = listener;
     }
 
-    companion object {
-        const val TAG = "WatchfaceBackupManager"
-
-        @SuppressLint("StaticFieldLeak")
-        private var INSTANCE: WatchfaceBnRManager? = null
-        fun getInstance(cont: Context): WatchfaceBnRManager =
-            INSTANCE ?: synchronized(this) {
-                INSTANCE ?: WatchfaceBnRManager(cont).also {
-                    INSTANCE = it
-                }
-            }
+    protected void setAvatarSynced(Context cont, int favoriteId,  String stickerId, boolean status) {
     }
+
+    protected ArrayList<String> getAremojiUpdatedStauts() {
+        return new ArrayList<>();
+    }
+
+    protected boolean getAremojiListUpdatedStatus(Context cont) {
+        return false;
+    }
+
+    public void setAremojiListUpdatedStatus(Context cont, boolean status) {
+    }
+
+    protected boolean getBitmojiUpdateStatus(Context cont) {
+        return false;
+    }
+
+    protected void readStickerFromServer() {
+    }
+
+    public void updateCharacterWatchFaceData() {
+    }
+
+    public void deleteStickerData(String stickerId){
+    }
+
+    protected BitmojiAppStatus getBitmojiAppStatus(){
+        return BitmojiAppStatus.UNKNOWN;
+    }
+
+    protected void requestToGetOptimizeData(Context context,String stickerId){}
+
+    protected void destroy(){mCharacterWatchFaceListener = null;}
+
+    public void updateArEmojiStickerStatus(String stringExtra) {}
 }
