@@ -1,272 +1,56 @@
-package com.samsung.android.companionservice.watchface.characterwatchface.bitmoji.manager
+package com.samsung.android.companionservice.watchface.data
 
 import android.content.Context
-import android.text.TextUtils
-import com.samsung.android.companionservice.aidl.watchface.characterwatchface.bitmoji.BitmojiAppStatus
+import android.content.pm.PackageManager
 import com.samsung.android.companionservice.constant.WatchFaceConstant
-import com.samsung.android.companionservice.watchface.characterwatchface.EmojiWatchFaceManagerBase
-import com.samsung.android.companionservice.watchface.characterwatchface.bitmoji.model.BitmojiSticker
-import com.samsung.android.companionservice.watchface.characterwatchface.bitmoji.util.BitmojiStickerCallBack
-import com.samsung.android.companionservice.watchface.characterwatchface.bitmoji.util.BitmojiUtil
-import com.samsung.android.companionservice.watchface.characterwatchface.constants.CharacterWatchFaceConstant
 import com.samsung.android.companionservice.watchface.util.WFLog
 import com.samsung.android.companionservice.watchface.util.WatchFaceUtil
-import com.samsung.android.companionservice.watchface.util.WatchfacePreference
-import com.samsung.android.plugin.sharedlib.utils.SharedFileUtils
 import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedConstant
-import com.samsung.android.plugin.sharedlib.watchface.WatchFaceSharedUtil
-import java.io.File
 
-class BitEmojiWatchFaceManager : EmojiWatchFaceManagerBase() {
-
-    companion object{
-        val TAG = "BitEmojiWatchFaceManager"
-        @kotlin.jvm.JvmStatic
-        val instance: BitEmojiWatchFaceManager = create()
-        private var bitmojiStickerManager: BitmojiStickerManager? = null
-        fun create() : BitEmojiWatchFaceManager = BitEmojiWatchFaceManager()
-        fun getInstance(): EmojiWatchFaceManagerBase {
-            return instance
-        }
+object ShareViaWatchFaceInfo {
+    private val TAG = "ShareViaWatchFaceInfo"
+    var shareViaWatchFaceList = ArrayList<ShareViaWatchFaceItemInfo>()
+    var shareViaWatchFaceActiveStatusMap: HashMap<ShareViaWatchFaceItemInfo, Boolean> = HashMap()
+    init {
+        shareViaWatchFaceList.add(ShareViaWatchFaceItemInfo(WatchFaceSharedConstant.MY_STYLE_WATCHFACE_PACKAGE_NAME,WatchFaceSharedConstant.MY_STYLE_WATCHFACE_CLASS_NAME,WatchFaceConstant.MY_STYLE_SHARE_VIA_ACTIVITY))
+        shareViaWatchFaceList.add(ShareViaWatchFaceItemInfo(WatchFaceSharedConstant.MY_PHOTO_WATCHFACE_PACKAGE_NAME,WatchFaceSharedConstant.MY_PHOTO_WATCHFACE_CLASS_NAME,WatchFaceConstant.MY_PHOTO_SHARE_VIA_ACTIVITY))
+        shareViaWatchFaceList.add(ShareViaWatchFaceItemInfo(WatchFaceSharedConstant.MY_PEBBLE_WATCHFACE_PACKAGE_NAME,WatchFaceSharedConstant.MY_PEBBLE_WATCHFACE_CLASS_NAME,WatchFaceConstant.MY_PEBBLE_SHARE_VIA_ACTIVITY))
+        shareViaWatchFaceList.add(ShareViaWatchFaceItemInfo(WatchFaceSharedConstant.PHOTO_STICKER_PACKAGE_NAME,WatchFaceSharedConstant.PHOTO_STICKER_CLASS_NAME,WatchFaceConstant.PHOTO_STRIKER_SHARE_VIA_ACTIVITY))
     }
 
-    override fun init(context: Context, deviceId: String) {
-        super.init(context, deviceId)
-        setDefault(context, deviceId)
-        readStickerFromServer()
-        updateCharacterWatchFaceData()
-    }
-
-    fun setDefault(cont: Context, deviceId: String){
-        WFLog.d(TAG, "setDefault")
-        var favId = WatchFaceUtil.getDefaultFavoriteId(
-            WatchFaceSharedConstant.BITMOJI_WATCHFACE_PACKAGE_NAME,
-            WatchFaceSharedConstant.BITMOJI_WATCHFACE_CLASS_NAME,
-            deviceId
-        )
-        var path = WatchFaceSharedUtil.getBitmojiFolderPath(cont, favId) + WatchFaceSharedConstant.BITMOJI_PREVIEW + WatchFaceSharedConstant.PNG_EXTENSION
-        WFLog.d(TAG, "setDefault path = $path")
-        if(!SharedFileUtils.isFileExit(path)){
-            mContext?.let{
-                WatchfacePreference.setBooleanSharedPref(
-                    mContext,
-                    WatchFaceSharedConstant.BITMOJI_PREF_DATA + deviceId,
-                    WatchFaceSharedConstant.BITMOJI_KEY_DATA_UPDATED + WatchFaceSharedConstant.ID + favId,
-                    true
-                )
-            }
-        }
-    }
-
-    override fun getBitmojiAppStatus(): BitmojiAppStatus {
-        mContext?.let { return BitmojiUtil.getBitmojiAppStatus(it) }
-        return BitmojiAppStatus.UNKNOWN
-    }
-
-    override fun getBitmojiUpdateStatus(cont: Context?): Boolean {
-        if (TextUtils.isEmpty(deviceId)) {
-            deviceId = WatchFaceSharedUtil.getDeviceID(cont)
-        }
-        return WatchfacePreference.getBooleanSharedPref(
-            cont,
-            WatchFaceSharedConstant.BITMOJI_PREF_DATA + deviceId,
-            WatchFaceSharedConstant.BITMOJI_KEY_DATA_UPDATED
-                    + WatchFaceSharedConstant.ID + WatchFaceUtil.getDefaultFavoriteId(
-                WatchFaceSharedConstant.BITMOJI_WATCHFACE_PACKAGE_NAME,
-                WatchFaceSharedConstant.BITMOJI_WATCHFACE_CLASS_NAME,
-                deviceId
-            ),
-            false
-        )
-    }
-
-    override fun setAvatarSynced(
-        context: Context,
-        favoriteId: Int,
-        stickerId: String?,
-        status: Boolean
-    ) {
-        if (mContext == null) {
-            mContext = context
-        }
-        var deviceId = WatchFaceSharedUtil.getDeviceID(context)
-        var favId = favoriteId
-        if (favId == -1) {
-            favId = WatchFaceUtil.getDefaultFavoriteId(
-                WatchFaceSharedConstant.BITMOJI_WATCHFACE_PACKAGE_NAME,
-                WatchFaceSharedConstant.BITMOJI_WATCHFACE_CLASS_NAME,
-                deviceId
-            )
-        }
-        mContext?.let{
-            WatchfacePreference.setBooleanSharedPref(
-                mContext,
-                WatchFaceSharedConstant.BITMOJI_PREF_DATA + deviceId,
-                WatchFaceSharedConstant.BITMOJI_KEY_DATA_UPDATED + WatchFaceSharedConstant.ID + favId,
-                status
-            )
-        }
-    }
-
-    override fun readStickerFromServer() {
-        WFLog.i(
-            TAG,
-            "bitmoji check permission :${mContext?.let { BitmojiUtil.isBitmojiSupported(it) }}"
-        )
-        if (BitmojiUtil.isBitmojiSupported(mContext!!)) {
-            if (bitmojiStickerManager == null) {
-                bitmojiStickerManager = BitmojiStickerManager(mContext, bitmojiStickerCallBack)
-            }
-
-            //     bitmojiStickerManager!!.readStickerFromServer()
-        }
-    }
-
-    fun readEmojiWithStickerId(StickerId: String) {
-        WFLog.w(TAG, "readEmojiWithStickerId()")
-        if (setStickerManager()) {
-            bitmojiStickerManager?.readEmojiWithStickerId(StickerId)
-        }
-    }
-
-    override fun updateCharacterWatchFaceData() {
-        WFLog.w(TAG, "updateCharacterWatchFaceData()")
-        if (setStickerManager()) {
-            bitmojiStickerManager?.updateStaticBitmoji()
-        }
-    }
-
-    fun setStickerManager(): Boolean {
-        if(bitmojiStickerManager!=null){return true}
-        mContext?.let {
-            val isSupport = BitmojiUtil.isBitmojiSupported(it)
-            WFLog.i(TAG, "isSupport BitEmoji?  :$isSupport}")
-            if (isSupport) {
-                bitmojiStickerManager = BitmojiStickerManager(it, bitmojiStickerCallBack)
-                bitmojiStickerManager?.let {
-                    return true
-                }?.run {
-                    WFLog.e(TAG, "setStickerManager Fail to get StickerManager")
-                    return false
-                }
-            }
-        }
-        return false
-    }
-
-    var bitmojiStickerCallBack: BitmojiStickerCallBack = object : BitmojiStickerCallBack {
-        override fun onLoadedFromServer(stickerPacks: BitmojiSticker?) {
-            WFLog.i(TAG, "onLoadedFromServer")
-            //bitmojiStickerManager?.let {
-            //    it.createBitmojiFile(
-            //        stickerPacks?.mImageUris,
-            //        StickerWatchFacesConstant.BITMOJI_TYPE_STATIC
-            //    )
-            //}?: run {
-            //    WFLog.i(TAG, "bitmojiStickerManager is null")
-            //}
-        }
-
-        override fun onCreatedFile(result: Int) {
-            WFLog.i(TAG, "onCreatedFile" + result)
-            if (bitmojiStickerManager != null) {
-                WFLog.i(TAG, "bitmojiStickerManager is not null")
-            }
-            if (result == CharacterWatchFaceConstant.SUCCESS && bitmojiStickerManager != null) {
-                WFLog.i(TAG, "onCreatedFile")
-                bitmojiStickerManager?.getContentsFromCache()
-            } else {
-                WFLog.e(
-                    TAG,
-                    "onCreatedFile is fail (bitmojiStickerManager : $bitmojiStickerManager"
-                )
-            }
-        }
-
-        override fun onTransformedFileList(stickerImgPacks: Array<File>?) {
-            if (stickerImgPacks != null && stickerImgPacks.size > 0) {
-                WFLog.i(TAG, "onTransformedFileUri > Size : " + stickerImgPacks.size)
-                if(WatchFaceUtil.compressBitMojiResource(mContext, stickerImgPacks)){
-                    WFLog.d(TAG, "saveBitmojiImagePack() Success")
-                    mCharacterWatchFaceListener.onBitEmojiCharacterSaveDone(WatchFaceConstant.RESULT_SUCCES)
+    /**
+     * @param context: not nullable context value
+     * @param availableListPackageClassNameSet:Available watchface ExWatchFace.packageName+ExWatchFace.className set. Value order must class name followed by package name
+     */
+    fun updateShareViaWatchFaceInfo(context: Context, availableListPackageClassNameSet: MutableSet<String>) {
+        shareViaWatchFaceList.forEach {
+            val keyItem = it.watchFacePackageName + it.watchFaceClassName
+            val currentStatusValue = shareViaWatchFaceActiveStatusMap[it]
+            if(currentStatusValue != null) {
+                WFLog.d(TAG,"currentStatusValue:: $currentStatusValue")
+                if (availableListPackageClassNameSet.contains(keyItem) && currentStatusValue == false ) {
+                    WFLog.i(TAG, "updateShareViaActivityStatus:: Enabled $it")
+                    WatchFaceUtil.setComponentSetting(context, PackageManager.COMPONENT_ENABLED_STATE_ENABLED, it.activityClassName)
+                    shareViaWatchFaceActiveStatusMap[it] = true
+                } else if(!availableListPackageClassNameSet.contains(keyItem) && currentStatusValue == true) {
+                    WFLog.i(TAG, "updateShareViaActivityStatus:: Disabled $it")
+                    WatchFaceUtil.setComponentSetting(context, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, it.activityClassName)
+                    shareViaWatchFaceActiveStatusMap[it] = false
                 } else {
-                    WFLog.e(TAG, "saveBitmojiImagePack() Failed")
-                        mCharacterWatchFaceListener.onBitEmojiCharacterSaveDone(WatchFaceConstant.RESULT_FAIL)
+                    WFLog.i(TAG, "updateShareViaActivityStatus:: nothing to change $it")
                 }
             } else {
-                WFLog.e(TAG, "stickerImgPacks != null && stickerImgPacks.size > 0 is false")
+                if(availableListPackageClassNameSet.contains(keyItem)) {
+                    WFLog.i(TAG, "updateShareViaActivityStatus:: Enabled $it")
+                    WatchFaceUtil.setComponentSetting(context, PackageManager.COMPONENT_ENABLED_STATE_ENABLED, it.activityClassName)
+                    shareViaWatchFaceActiveStatusMap[it] = true
+                } else {
+                    WFLog.i(TAG, "updateShareViaActivityStatus:: Disabled $it")
+                    WatchFaceUtil.setComponentSetting(context, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, it.activityClassName)
+                    shareViaWatchFaceActiveStatusMap[it] = false
+                }
+
             }
         }
-
-        override fun onProgressUpdate(progress: Int) {
-            WFLog.i(TAG, "onProgressUpdate ")
-        }
-
-        override fun onBitEmojiCharacterUpdated() {
-            WFLog.i(TAG, "onBitEmojiCharacterUpdated")
-            setAvatarSynced(mContext, -1,  "",true)
-            mCharacterWatchFaceListener.onBitEmojiCharacterUpdated()
-        }
     }
-}
-
-public class EmojiWatchFaceManagerBase {
-    protected Context mContext;
-    protected String deviceId;
-    protected CharacterWatchFaceListener mCharacterWatchFaceListener;
-
-    protected void init(Context context, String device) {
-        if (mContext == null) {
-            mContext = context;
-        }
-        deviceId = device;
-    }
-    public boolean isContextNotExist(){
-        return (mContext == null);
-    }
-
-    public void setContext(Context context){
-        mContext = context;
-    }
-
-    protected void setCharacterUIListener(CharacterWatchFaceListener listener){
-        mCharacterWatchFaceListener = listener;
-    }
-
-    protected void setAvatarSynced(Context cont, int favoriteId,  String stickerId, boolean status) {
-    }
-
-    protected ArrayList<String> getAremojiUpdatedStauts() {
-        return new ArrayList<>();
-    }
-
-    protected boolean getAremojiListUpdatedStatus(Context cont) {
-        return false;
-    }
-
-    public void setAremojiListUpdatedStatus(Context cont, boolean status) {
-    }
-
-    protected boolean getBitmojiUpdateStatus(Context cont) {
-        return false;
-    }
-
-    protected void readStickerFromServer() {
-    }
-
-    public void updateCharacterWatchFaceData() {
-    }
-
-    public void deleteStickerData(String stickerId){
-    }
-
-    protected BitmojiAppStatus getBitmojiAppStatus(){
-        return BitmojiAppStatus.UNKNOWN;
-    }
-
-    protected void requestToGetOptimizeData(Context context,String stickerId){}
-
-    protected void destroy(){mCharacterWatchFaceListener = null;}
-
-    public void updateArEmojiStickerStatus(String stringExtra) {}
 }
